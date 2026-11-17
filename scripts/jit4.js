@@ -50,6 +50,9 @@ export async function main(ns) {
         ns.tail();
     }
 
+    // Prevent disableLog() itself from spamming the log.
+    ns.disableLog("disableLog");
+
     for (
         const fn of [
             "sleep",
