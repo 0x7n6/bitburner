@@ -50,9 +50,20 @@ export async function main(ns) {
         const fn of [
             "sleep",
             "scan",
+
+            "getServer",
+            "getServerMaxRam",
             "getServerUsedRam",
             "getServerMoneyAvailable",
             "getServerSecurityLevel",
+
+            "getHackingLevel",
+            "getScriptRam",
+            "getPlayer",
+
+            "fileExists",
+            "hasRootAccess",
+            "ps",
         ]
     ) {
         try {
@@ -2037,11 +2048,8 @@ function modelBatch(
         );
 
     const growSec =
-        ns.growthAnalyzeSecurity(
-            g,
-            target,
-            env.cores
-        );
+        ns.growthAnalyzeSecurity(g);
+
 
     w1 =
         Math.max(
