@@ -9,6 +9,10 @@ export async function main(ns) {
     const f = ns.flags([
         ["auto", true],
         ["targets", 2],
+        ["portfolio-top", 6],
+        ["split-step", 0.05],
+        ["min-lane-gain", 0.03],
+        ["max-period-ratio", 10],
 
         ["reserve-pct", 0.20],
         ["remote-reserve-pct", 0.08],
@@ -60,6 +64,7 @@ export async function main(ns) {
             "getHackingLevel",
             "getScriptRam",
             "getPlayer",
+            "getMoneySources",
 
             "fileExists",
             "hasRootAccess",
@@ -80,6 +85,30 @@ export async function main(ns) {
             1,
             Math.floor(Number(f.targets))
         ),
+        portfolioTop: Math.max(
+            2,
+            Math.floor(
+                Number(f["portfolio-top"])
+            )
+        ),
+
+        splitStep: clamp(
+            Number(f["split-step"]),
+            0.025,
+            0.25
+        ),
+
+        minLaneGain: clamp(
+            Number(f["min-lane-gain"]),
+            0,
+            0.50
+        ),
+
+        maxPeriodRatio: Math.max(
+            2,
+            Number(f["max-period-ratio"])
+        ),
+
 
         reservePct: clamp(
             Number(f["reserve-pct"]),
@@ -236,7 +265,12 @@ export async function main(ns) {
     const startMoney =
         ns.getPlayer().money;
 
-    const startAt =
+    const startHackMoney =
+    ns.getMoneySources()
+        .sinceInstall
+        .hacking;
+    
+        const startAt =
         Date.now();
 
     ns.tprint(
@@ -637,6 +671,12 @@ export async function main(ns) {
                                 .money -
                             startMoney;
 
+                        const hackingIncome =
+                            ns.getMoneySources()
+                                .sinceInstall
+                                .hacking -
+                            startHackMoney;
+
                         ns.tprint(
                             `jit4.js: JIT4 COMPLETE | ` +
                             `verified=${totalVerified}/${cfg.limit} | ` +
@@ -645,14 +685,18 @@ export async function main(ns) {
 
                         ns.tprint(
                             `jit4.js: Hack=${startHack}->${endHack} | ` +
-                            `walletΔ(mixed)=${money(wallet)} | ` +
-                            `avg=${money(
-                                wallet /
+                            `hacking-income=${money(hackingIncome)} | ` +
+                            `REAL=${money(
+                                hackingIncome /
                                     Math.max(
                                         1,
                                         elapsed
                                     )
                             )}/s`
+                        );
+
+                        ns.tprint(
+                            `jit4.js: walletΔ(mixed)=${money(wallet)}`
                         );
 
                         return;
@@ -1205,7 +1249,7 @@ function autoRoot(
  * -------------------------------------------------------
  */
 
-function chooseEpoch(
+function chooseEpochLegacy(
     ns,
     env,
     cfg,
@@ -1452,6 +1496,428 @@ function chooseEpoch(
         homeLeft,
 
         remoteLeft,
+
+        candidates:
+            candidates.slice(
+                0,
+                8
+            ),
+    };
+}
+
+function chooseEpoch(
+    ns,
+    env,
+    cfg,
+    preferred = "",
+    keepTargets = []
+) {
+    const candidates = [];
+
+    for (const host of env.hosts) {
+        if (!ns.hasRootAccess(host)) {
+            continue;
+        }
+
+        const s = ns.getServer(host);
+
+        const maxMoney =
+            Number(s.moneyMax ?? 0);
+
+        const req =
+            Number(
+                s.requiredHackingSkill ??
+                Infinity
+            );
+
+        if (
+            maxMoney <= 0 ||
+            req > env.hack ||
+            s.purchasedByPlayer
+        ) {
+            continue;
+        }
+
+        const potential =
+            optimizeTarget(
+                ns,
+                host,
+                env.homeBudget,
+                env.remoteBudget,
+                cfg,
+                env
+            );
+
+        if (!potential) {
+            continue;
+        }
+
+        const ready =
+            isReady(
+                ns,
+                host,
+                cfg
+            );
+
+        const warm =
+            ready
+                ? 1
+                : 0.82;
+
+        candidates.push({
+            target: host,
+            ready,
+            potential,
+            rankScore:
+                potential.evps *
+                warm,
+        });
+    }
+
+    candidates.sort(
+        (a, b) =>
+            b.rankScore -
+            a.rankScore
+    );
+
+    /*
+     * Build candidate pool.
+     *
+     * Always preserve:
+     * - explicitly preferred target
+     * - current epoch targets
+     *
+     * Then fill with strongest candidates.
+     */
+    const pool = [];
+
+    const add = c => {
+        if (
+            c &&
+            !pool.some(
+                x =>
+                    x.target ===
+                    c.target
+            )
+        ) {
+            pool.push(c);
+        }
+    };
+
+    if (preferred) {
+        add(
+            candidates.find(
+                x =>
+                    x.target ===
+                    preferred
+            )
+        );
+    }
+
+    for (const t of keepTargets) {
+        add(
+            candidates.find(
+                x =>
+                    x.target === t
+            )
+        );
+    }
+
+    for (const c of candidates) {
+        if (
+            pool.length >=
+            cfg.portfolioTop
+        ) {
+            break;
+        }
+
+        add(c);
+    }
+
+    let best = {
+        lanes: [],
+        totalEV: 0,
+        homeLeft:
+            env.homeBudget,
+        remoteLeft:
+            env.remoteBudget,
+    };
+
+    /*
+     * -----------------------------------------
+     * SINGLE TARGET PORTFOLIOS
+     * -----------------------------------------
+     */
+
+    for (const c of pool) {
+        /*
+         * Explicit preferred target means
+         * that target must remain primary.
+         */
+        if (
+            preferred &&
+            c.target !== preferred
+        ) {
+            continue;
+        }
+
+        const p =
+            optimizeTarget(
+                ns,
+                c.target,
+                env.homeBudget,
+                env.remoteBudget,
+                cfg,
+                env
+            );
+
+        if (!p) {
+            continue;
+        }
+
+        const candidate = {
+            lanes: [
+                {
+                    ...p,
+                    ready:
+                        c.ready,
+                },
+            ],
+
+            totalEV:
+                p.evps,
+
+            homeLeft:
+                Math.max(
+                    0,
+                    env.homeBudget -
+                        p.homeUse
+                ),
+
+            remoteLeft:
+                Math.max(
+                    0,
+                    env.remoteBudget -
+                        p.remoteUse
+                ),
+        };
+
+        if (
+            candidate.totalEV >
+            best.totalEV
+        ) {
+            best =
+                candidate;
+        }
+    }
+
+    if (
+        cfg.maxTargets <= 1 ||
+        pool.length < 2
+    ) {
+        return {
+            ...best,
+
+            candidates:
+                candidates.slice(
+                    0,
+                    8
+                ),
+        };
+    }
+
+    /*
+     * -----------------------------------------
+     * TWO-TARGET GLOBAL PORTFOLIO SEARCH
+     * -----------------------------------------
+     *
+     * Instead of:
+     *
+     *   A gets everything
+     *   B gets scraps
+     *
+     * search resource partitions.
+     */
+
+    for (
+        let i = 0;
+        i < pool.length;
+        i++
+    ) {
+        for (
+            let j = 0;
+            j < pool.length;
+            j++
+        ) {
+            if (i === j) {
+                continue;
+            }
+
+            const a =
+                pool[i];
+
+            const b =
+                pool[j];
+
+            /*
+             * Preferred target remains
+             * primary if supplied.
+             */
+            if (
+                preferred &&
+                a.target !==
+                    preferred
+            ) {
+                continue;
+            }
+
+            for (
+                let share = 0.25;
+                share <=
+                    0.90 + 1e-9;
+                share +=
+                    cfg.splitStep
+            ) {
+                const firstHome =
+                    env.homeBudget *
+                    share;
+
+                const firstRemote =
+                    env.remoteBudget *
+                    share;
+
+                const p1 =
+                    optimizeTarget(
+                        ns,
+                        a.target,
+                        firstHome,
+                        firstRemote,
+                        cfg,
+                        env
+                    );
+
+                if (!p1) {
+                    continue;
+                }
+
+                /*
+                 * Use ACTUAL resource usage,
+                 * not allocated share.
+                 *
+                 * Unused capacity returns
+                 * to portfolio pool.
+                 */
+                const homeLeft =
+                    Math.max(
+                        0,
+                        env.homeBudget -
+                            p1.homeUse
+                    );
+
+                const remoteLeft =
+                    Math.max(
+                        0,
+                        env.remoteBudget -
+                            p1.remoteUse
+                    );
+
+                const p2 =
+                    optimizeTarget(
+                        ns,
+                        b.target,
+                        homeLeft,
+                        remoteLeft,
+                        cfg,
+                        env
+                    );
+
+                if (!p2) {
+                    continue;
+                }
+
+                /*
+                 * ---------------------------------
+                 * SECONDARY ADMISSION CONTROL
+                 * ---------------------------------
+                 */
+
+                const marginal =
+                    p2.evps /
+                    Math.max(
+                        1,
+                        p1.evps
+                    );
+
+                if (
+                    marginal <
+                    cfg.minLaneGain
+                ) {
+                    continue;
+                }
+
+                /*
+                 * Don't accept a zombie lane
+                 * whose cadence is absurdly
+                 * slower than primary.
+                 */
+                if (
+                    p2.period >
+                    p1.period *
+                        cfg.maxPeriodRatio
+                ) {
+                    continue;
+                }
+
+                const totalEV =
+                    p1.evps +
+                    p2.evps;
+
+                if (
+                    totalEV <=
+                    best.totalEV
+                ) {
+                    continue;
+                }
+
+                best = {
+                    lanes: [
+                        {
+                            ...p1,
+                            ready:
+                                a.ready,
+                        },
+
+                        {
+                            ...p2,
+                            ready:
+                                b.ready,
+                        },
+                    ],
+
+                    totalEV,
+
+                    homeLeft:
+                        Math.max(
+                            0,
+                            env.homeBudget -
+                                p1.homeUse -
+                                p2.homeUse
+                        ),
+
+                    remoteLeft:
+                        Math.max(
+                            0,
+                            env.remoteBudget -
+                                p1.remoteUse -
+                                p2.remoteUse
+                        ),
+                };
+            }
+        }
+    }
+
+    return {
+        ...best,
 
         candidates:
             candidates.slice(
