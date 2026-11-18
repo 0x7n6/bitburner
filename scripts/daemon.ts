@@ -6,6 +6,9 @@ const ENGINE =
 const PROGRESSION =
     "progression.ts";
 
+const PAUSE_FILE =
+    ".7n8-pause.txt";
+
 const WORKERS = [
     "j5h.ts",
     "j5g.ts",
@@ -73,6 +76,9 @@ export async function main(
     let lastSignature =
         "";
 
+    let pauseAnnounced =
+        false;
+
     const deployed =
         new Set<string>();
 
@@ -136,6 +142,43 @@ export async function main(
             );
         }
 
+        const paused =
+            ns.fileExists(
+                PAUSE_FILE,
+                "home"
+            );
+
+        if (paused) {
+            if (!pauseAnnounced) {
+                pauseAnnounced =
+                    true;
+
+                ns.tprint(
+                    "[OS] PAUSED | engine supervision suspended"
+                );
+            }
+
+            enforcePause(
+                ns,
+                supervisor
+            );
+
+            await ns.sleep(
+                cycle
+            );
+
+            continue;
+        }
+
+        if (pauseAnnounced) {
+            pauseAnnounced =
+                false;
+
+            ns.tprint(
+                "[OS] RESUMED"
+            );
+        }
+
         superviseEngine(
             ns,
             supervisor,
@@ -159,6 +202,41 @@ export async function main(
             cycle
         );
     }
+}
+
+
+function enforcePause(
+    ns: NS,
+    state: EngineSupervisor
+): void {
+    /*
+     * Pause means intentional operator control.
+     *
+     * If an engine somehow appears while paused,
+     * kill it rather than treating it as healthy.
+     */
+    for (
+        const process
+        of ns.ps("home")
+    ) {
+        if (
+            process.filename !==
+            ENGINE
+        ) {
+            continue;
+        }
+
+        ns.kill(
+            process.pid
+        );
+    }
+
+    state.pid = 0;
+    state.startedAt = 0;
+
+    state.restartAfter =
+        Date.now() +
+        2000;
 }
 
 
