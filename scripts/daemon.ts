@@ -12,6 +12,12 @@ const WORKERS = [
     "j5w.ts",
 ];
 
+const HEALTHY_ENGINE_MS =
+    30_000;
+
+const MAX_RESTART_BACKOFF_MS =
+    60_000;
+
 type Opener =
     readonly [
         file: string,
@@ -19,6 +25,16 @@ type Opener =
             host: string
         ) => boolean,
     ];
+
+interface EngineSupervisor {
+    pid: number;
+    startedAt: number;
+
+    restartAfter: number;
+    backoffMs: number;
+
+    crashes: number;
+}
 
 export async function main(
     ns: NS
@@ -43,14 +59,32 @@ export async function main(
             ) || 2000
         );
 
-    ns.tprint(
-        "7n8 DAEMON ONLINE"
-    );
+    const supervisor:
+        EngineSupervisor = {
+        pid: 0,
+        startedAt: 0,
+
+        restartAfter: 0,
+        backoffMs: 2000,
+
+        crashes: 0,
+    };
 
     let lastSignature =
         "";
 
+    const deployed =
+        new Set<string>();
+
+    ns.tprint("");
+    ns.tprint(
+        "7n8 DAEMON ONLINE"
+    );
+
     while (true) {
+        const now =
+            Date.now();
+
         const reset =
             ns.getResetInfo();
 
@@ -72,7 +106,8 @@ export async function main(
 
         deployWorkers(
             ns,
-            hosts
+            hosts,
+            deployed
         );
 
         const signature =
@@ -88,7 +123,7 @@ export async function main(
             lastSignature =
                 signature;
 
-            ns.print(
+            ns.tprint(
                 `[ENV] ${signature}`
             );
         }
@@ -97,11 +132,15 @@ export async function main(
             rootedNow > 0
         ) {
             ns.tprint(
-                `[ROOT] +${rootedNow} new server(s)`
+                `[ROOT] +${rootedNow} server(s)`
             );
         }
 
-        ensureEngine(ns);
+        superviseEngine(
+            ns,
+            supervisor,
+            now
+        );
 
         if (
             singularity &&
@@ -123,27 +162,132 @@ export async function main(
 }
 
 
-function ensureEngine(
-    ns: NS
+function superviseEngine(
+    ns: NS,
+    state: EngineSupervisor,
+    now: number
 ): void {
+    /*
+     * We believe an engine is alive.
+     */
+    if (
+        state.pid > 0
+    ) {
+        if (
+            ns.isRunning(
+                state.pid
+            )
+        ) {
+            /*
+             * Survived long enough.
+             * Consider this a healthy launch
+             * and clear crash history.
+             */
+            if (
+                state.startedAt > 0 &&
+                now -
+                    state.startedAt >=
+                    HEALTHY_ENGINE_MS
+            ) {
+                state.crashes = 0;
+                state.backoffMs = 2000;
+
+                /*
+                 * Avoid repeatedly resetting this
+                 * every daemon cycle.
+                 */
+                state.startedAt = 0;
+            }
+
+            return;
+        }
+
+        /*
+         * Engine disappeared.
+         */
+        const lifetime =
+            state.startedAt > 0
+                ? now -
+                    state.startedAt
+                : HEALTHY_ENGINE_MS;
+
+        state.pid = 0;
+
+        if (
+            lifetime <
+            HEALTHY_ENGINE_MS
+        ) {
+            state.crashes++;
+
+            state.restartAfter =
+                now +
+                state.backoffMs;
+
+            ns.tprint(
+                `[ENGINE] early exit | ` +
+                `lifetime=${fmtTime(lifetime)} | ` +
+                `crashes=${state.crashes} | ` +
+                `retry=${fmtTime(state.backoffMs)}`
+            );
+
+            state.backoffMs =
+                Math.min(
+                    MAX_RESTART_BACKOFF_MS,
+                    state.backoffMs *
+                        2
+                );
+
+            return;
+        }
+
+        state.restartAfter =
+            now +
+            2000;
+    }
+
+    /*
+     * Somebody may have started JIT5 manually.
+     * Adopt it rather than starting a duplicate.
+     */
+    const existing =
+        ns.ps("home")
+            .find(
+                p =>
+                    p.filename ===
+                    ENGINE
+            );
+
+    if (existing) {
+        state.pid =
+            existing.pid;
+
+        state.startedAt =
+            now;
+
+        ns.tprint(
+            `[ENGINE] adopted JIT5 | PID ${existing.pid}`
+        );
+
+        return;
+    }
+
+    if (
+        now <
+        state.restartAfter
+    ) {
+        return;
+    }
+
     if (
         !ns.fileExists(
             ENGINE,
             "home"
         )
     ) {
-        return;
-    }
+        state.restartAfter =
+            now +
+            10_000;
 
-    const running =
-        ns.ps("home")
-            .some(
-                p =>
-                    p.filename ===
-                    ENGINE
-            );
-
-    if (running) {
         return;
     }
 
@@ -165,6 +309,10 @@ function ensureEngine(
         free <
         ram
     ) {
+        state.restartAfter =
+            now +
+            5000;
+
         return;
     }
 
@@ -175,11 +323,30 @@ function ensureEngine(
             1
         );
 
-    if (pid) {
-        ns.tprint(
-            `[ENGINE] JIT5 started | PID ${pid}`
-        );
+    if (!pid) {
+        state.restartAfter =
+            now +
+            state.backoffMs;
+
+        state.backoffMs =
+            Math.min(
+                MAX_RESTART_BACKOFF_MS,
+                state.backoffMs *
+                    2
+            );
+
+        return;
     }
+
+    state.pid =
+        pid;
+
+    state.startedAt =
+        now;
+
+    ns.tprint(
+        `[ENGINE] JIT5 started | PID ${pid}`
+    );
 }
 
 
@@ -187,15 +354,23 @@ function ensureSingleton(
     ns: NS,
     script: string
 ): void {
-    const running =
+    if (
         ns.ps("home")
             .some(
                 p =>
                     p.filename ===
                     script
-            );
+            )
+    ) {
+        return;
+    }
 
-    if (running) {
+    if (
+        !ns.fileExists(
+            script,
+            "home"
+        )
+    ) {
         return;
     }
 
@@ -284,7 +459,10 @@ function rootEligible(
                 rooted++;
             }
         } catch {
-            // Special/inaccessible server.
+            /*
+             * Ignore special/inaccessible
+             * servers.
+             */
         }
     }
 
@@ -340,7 +518,8 @@ function getOpeners(
 
 function deployWorkers(
     ns: NS,
-    hosts: string[]
+    hosts: string[],
+    deployed: Set<string>
 ): void {
     for (
         const host
@@ -358,14 +537,56 @@ function deployWorkers(
             continue;
         }
 
-        try {
-            ns.scp(
-                WORKERS,
-                host,
-                "home"
+        /*
+         * Already verified this host
+         * during this daemon lifetime.
+         */
+        if (
+            deployed.has(
+                host
+            )
+        ) {
+            continue;
+        }
+
+        const complete =
+            WORKERS.every(
+                file =>
+                    ns.fileExists(
+                        file,
+                        host
+                    )
             );
+
+        if (complete) {
+            deployed.add(
+                host
+            );
+
+            continue;
+        }
+
+        try {
+            const ok =
+                ns.scp(
+                    WORKERS,
+                    host,
+                    "home"
+                );
+
+            if (ok) {
+                deployed.add(
+                    host
+                );
+
+                ns.print(
+                    `[DEPLOY] ${host}`
+                );
+            }
         } catch {
-            // Best effort.
+            /*
+             * Retry next daemon cycle.
+             */
         }
     }
 }
@@ -405,14 +626,14 @@ function environmentSignature(
         `hack=${ns.getHackingLevel()}`,
         `openers=${getOpeners(ns).length}`,
         `root=${rooted}/${hosts.length}`,
-        `ram=${Math.round(totalRam)}GB`,
+        `ram=${fmtRam(totalRam)}`,
         `formulas=${
             ns.fileExists(
                 "Formulas.exe",
                 "home"
             )
-                ? 1
-                : 0
+                ? "YES"
+                : "NO"
         }`,
     ].join(" | ");
 }
@@ -455,6 +676,7 @@ function scanAll(
             }
 
             seen.add(next);
+
             queue.push(next);
         }
     }
@@ -462,4 +684,74 @@ function scanAll(
     return [
         ...seen,
     ];
+}
+
+
+function fmtTime(
+    ms: number
+): string {
+    if (
+        ms >= 60_000
+    ) {
+        return (
+            (
+                ms /
+                60_000
+            ).toFixed(1) +
+            "m"
+        );
+    }
+
+    if (
+        ms >= 1000
+    ) {
+        return (
+            (
+                ms /
+                1000
+            ).toFixed(1) +
+            "s"
+        );
+    }
+
+    return (
+        Math.round(ms) +
+        "ms"
+    );
+}
+
+
+function fmtRam(
+    gb: number
+): string {
+    if (
+        gb >=
+        1024 *
+            1024
+    ) {
+        return (
+            gb /
+            (
+                1024 *
+                1024
+            )
+        ).toFixed(2) +
+        "PB";
+    }
+
+    if (
+        gb >=
+        1024
+    ) {
+        return (
+            gb /
+            1024
+        ).toFixed(2) +
+        "TB";
+    }
+
+    return (
+        gb.toFixed(0) +
+        "GB"
+    );
 }
