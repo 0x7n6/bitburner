@@ -12,6 +12,10 @@ type Phase =
     | "G"
     | "W2";
 
+type Topology =
+    | "HOME_GW"
+    | "REMOTE_ALL";
+
 type PlayerState =
     ReturnType<NS["getPlayer"]>;
 
@@ -106,6 +110,8 @@ interface Env {
 interface BatchModel {
     target: string;
 
+    topology: Topology;
+
     chance: number;
     hackPct: number;
 
@@ -168,6 +174,8 @@ interface Job {
 
     target: string;
     phase: Phase;
+
+    topology: Topology;
 
     script: string;
     threads: number;
@@ -678,17 +686,24 @@ export async function main(
                 );
         }
 
-        let plan =
+        /*
+         * IDEAL PLAN:
+         *
+         * May include targets that are not READY yet.
+         * This is our strategic destination.
+         */
+        let idealPlan =
             choosePortfolio(
                 ns,
                 env,
                 cfg,
                 controls,
-                preferred
+                preferred,
+                false
             );
 
         if (
-            plan.lanes.length === 0
+            idealPlan.lanes.length === 0
         ) {
             ns.print(
                 `[BOOT] no profitable target | ` +
@@ -703,10 +718,14 @@ export async function main(
             continue;
         }
 
+        /*
+         * Dry-run deliberately shows the IDEAL economic
+         * destination, even if that target still needs prep.
+         */
         if (cfg.dryRun) {
             printPlan(
                 ns,
-                plan,
+                idealPlan,
                 controls,
                 cfg,
                 true
@@ -716,23 +735,80 @@ export async function main(
         }
 
         /*
-         * PREP happens outside
-         * the rolling scheduler.
+         * ========================================================
+         * BACKGROUND PREWARM
+         *
+         * Never shut down a healthy production target merely
+         * because a stronger future target still needs prep.
+         * ========================================================
          */
         for (
             const lane
-            of plan.lanes
+            of idealPlan.lanes
         ) {
             if (
-                !isReady(
+                isReady(
                     ns,
                     lane.target,
                     cfg
                 )
             ) {
-                ns.tprint(
-                    `[PREP] ${lane.target}`
-                );
+                continue;
+            }
+
+            startBackgroundPrep(
+                ns,
+                lane.target
+            );
+        }
+
+        /*
+         * ACTIVE PLAN:
+         *
+         * Only targets already READY are allowed to become
+         * production lanes.
+         */
+        let plan =
+            choosePortfolio(
+                ns,
+                env,
+                cfg,
+                controls,
+                preferred,
+                true
+            );
+
+        /*
+         * Bootstrap exception:
+         *
+         * Immediately after an augmentation reset it is possible
+         * that literally no profitable target is READY.
+         *
+         * In that case we still need one blocking prep to bootstrap
+         * the economy. After one target is READY, future upgrades
+         * use background prewarming.
+         */
+        if (
+            plan.lanes.length === 0
+        ) {
+            ns.tprint(
+                "[BOOT] no READY production target; " +
+                "performing one bootstrap prep."
+            );
+
+            for (
+                const lane
+                of idealPlan.lanes
+            ) {
+                if (
+                    isReady(
+                        ns,
+                        lane.target,
+                        cfg
+                    )
+                ) {
+                    continue;
+                }
 
                 const ok =
                     await prepTarget(
@@ -747,27 +823,48 @@ export async function main(
                         `[PREP] FAILED ${lane.target}`
                     );
                 }
+
+                /*
+                 * One successfully prepared lane is enough
+                 * to bootstrap production.
+                 */
+                if (
+                    isReady(
+                        ns,
+                        lane.target,
+                        cfg
+                    )
+                ) {
+                    break;
+                }
             }
+
+            env =
+                buildEnv(
+                    ns,
+                    cfg
+                );
+
+            idealPlan =
+                choosePortfolio(
+                    ns,
+                    env,
+                    cfg,
+                    controls,
+                    preferred,
+                    false
+                );
+
+            plan =
+                choosePortfolio(
+                    ns,
+                    env,
+                    cfg,
+                    controls,
+                    preferred,
+                    true
+                );
         }
-
-        /*
-         * Hardware + target state
-         * may have changed during prep.
-         */
-        env =
-            buildEnv(
-                ns,
-                cfg
-            );
-
-        plan =
-            choosePortfolio(
-                ns,
-                env,
-                cfg,
-                controls,
-                preferred
-            );
 
         if (
             plan.lanes.length === 0
@@ -1331,7 +1428,9 @@ function modelBatch(
     target: string,
     wantedTake: number,
     cfg: Config,
-    env: Env
+    env: Env,
+    gwCores: number,
+    topology: Topology
 ): BatchModel | null {
     const server =
         ns.getServer(
@@ -1521,7 +1620,7 @@ function modelBatch(
                         postHack,
                         env.player,
                         moneyMax,
-                        env.homeCores
+                        gwCores
                     ) *
                     cfg.growSafety
             );
@@ -1532,7 +1631,7 @@ function modelBatch(
                     target,
                     moneyMax /
                         remaining,
-                    env.homeCores
+                    gwCores
                 ) *
                     cfg.growSafety *
                     cfg.fallbackSafety
@@ -1548,7 +1647,7 @@ function modelBatch(
     const weakenOne =
         ns.weakenAnalyze(
             1,
-            env.homeCores
+            gwCores
         );
 
     const hackSec =
@@ -1588,6 +1687,8 @@ function modelBatch(
     return {
         target,
 
+        topology,
+
         chance,
         hackPct,
 
@@ -1622,7 +1723,8 @@ function optimizeTarget(
     controls: Controls
 ): LanePlan | null {
     if (
-        homeBudget <= 0
+        homeBudget <= 0 &&
+        remoteBudget <= 0
     ) {
         return null;
     }
@@ -1649,6 +1751,30 @@ function optimizeTarget(
                 controls.gapFloor
         );
 
+    /*
+     * HOME_GW
+     *
+     * H   -> remote first
+     * G/W -> home cores
+     *
+     * REMOTE_ALL
+     *
+     * H/G/W -> remote fleet
+     * G/W modeled conservatively at 1 core.
+     */
+    const topologies:
+        Topology[] = [
+        "HOME_GW",
+    ];
+
+    if (
+        remoteBudget > 0
+    ) {
+        topologies.push(
+            "REMOTE_ALL"
+        );
+    }
+
     for (
         let take =
             cfg.takeMin;
@@ -1660,206 +1786,346 @@ function optimizeTarget(
         take +=
             cfg.takeStep
     ) {
-        const batch =
-            modelBatch(
-                ns,
-                target,
-                take,
-                cfg,
-                env
-            );
-
-        if (!batch) {
-            continue;
-        }
-
         for (
-            const gap
-            of gaps
+            const topology
+            of topologies
         ) {
-            const minPeriod =
-                Math.max(
-                    3 *
-                        gap +
-                        cfg.guard,
-                    250
+            const gwCores =
+                topology ===
+                    "HOME_GW"
+                    ? env.homeCores
+                    : 1;
+
+            const batch =
+                modelBatch(
+                    ns,
+                    target,
+                    take,
+                    cfg,
+                    env,
+                    gwCores,
+                    topology
                 );
 
-            /*
-             * JIT5 addition:
-             *
-             * reject a batch that cannot
-             * physically fit its OWN
-             * overlapping G/W footprint.
-             *
-             * Period tuning cannot fix
-             * impossible instantaneous RAM.
-             */
-            const peakGW =
-                batch.w1 *
-                    env.workerRam.w +
-                batch.g *
-                    env.workerRam.g +
-                batch.w2 *
-                    env.workerRam.w;
-
-            const remoteHackCapacity =
-                remoteBudget /
-                Math.max(
-                    env.workerRam.h,
-                    1e-9
-                );
-
-            const overflowHackThreads =
-                Math.max(
-                    0,
-                    batch.h -
-                    remoteHackCapacity
-                );
-
-            const peakHome =
-                peakGW +
-                overflowHackThreads *
-                    env.workerRam.h;
-
-            if (
-                peakHome >
-                homeBudget *
-                    0.98
-            ) {
+            if (!batch) {
                 continue;
             }
-
-            const gwWeighted =
-                batch.w1 *
-                    env.workerRam.w *
-                    (
-                        batch.wTime +
-                        cfg.launchLead
-                    ) +
-
-                batch.g *
-                    env.workerRam.g *
-                    (
-                        batch.gTime +
-                        cfg.launchLead
-                    ) +
-
-                batch.w2 *
-                    env.workerRam.w *
-                    (
-                        batch.wTime +
-                        cfg.launchLead
-                    );
-
-            const hWeighted =
-                batch.h *
-                env.workerRam.h *
-                (
-                    batch.hTime +
-                    cfg.launchLead
-                );
-
-            let period =
-                minPeriod;
-
-            let homeUse =
-                Infinity;
-
-            let remoteUse =
-                0;
 
             for (
-                let i = 0;
-                i < 24;
-                i++
+                const gap
+                of gaps
             ) {
-                const remoteDemand =
-                    hWeighted *
-                    cfg.safety /
-                    period;
-
-                remoteUse =
-                    Math.min(
-                        remoteBudget,
-                        remoteDemand
-                    );
-
-                const homeHack =
+                const minPeriod =
                     Math.max(
-                        0,
-                        remoteDemand -
-                        remoteBudget
+                        3 *
+                            gap +
+                            cfg.guard,
+                        250
                     );
 
-                homeUse =
-                    gwWeighted *
-                        cfg.safety /
-                        period +
-                    homeHack;
+                let period =
+                    minPeriod;
 
+                let homeUse =
+                    0;
+
+                let remoteUse =
+                    0;
+
+                /*
+                 * =================================================
+                 * HOME_GW
+                 * =================================================
+                 */
                 if (
-                    homeUse <=
-                    homeBudget
+                    topology ===
+                    "HOME_GW"
                 ) {
-                    break;
+                    if (
+                        homeBudget <= 0
+                    ) {
+                        continue;
+                    }
+
+                    const peakGW =
+                        batch.w1 *
+                            env.workerRam.w +
+
+                        batch.g *
+                            env.workerRam.g +
+
+                        batch.w2 *
+                            env.workerRam.w;
+
+                    const remoteHackCapacity =
+                        remoteBudget /
+                        Math.max(
+                            env.workerRam.h,
+                            1e-9
+                        );
+
+                    const overflowHackThreads =
+                        Math.max(
+                            0,
+                            batch.h -
+                                remoteHackCapacity
+                        );
+
+                    const peakHome =
+                        peakGW +
+                        overflowHackThreads *
+                            env.workerRam.h;
+
+                    if (
+                        peakHome >
+                        homeBudget *
+                            0.98
+                    ) {
+                        continue;
+                    }
+
+                    const gwWeighted =
+                        batch.w1 *
+                            env.workerRam.w *
+                            (
+                                batch.wTime +
+                                cfg.launchLead
+                            ) +
+
+                        batch.g *
+                            env.workerRam.g *
+                            (
+                                batch.gTime +
+                                cfg.launchLead
+                            ) +
+
+                        batch.w2 *
+                            env.workerRam.w *
+                            (
+                                batch.wTime +
+                                cfg.launchLead
+                            );
+
+                    const hWeighted =
+                        batch.h *
+                        env.workerRam.h *
+                        (
+                            batch.hTime +
+                            cfg.launchLead
+                        );
+
+                    homeUse =
+                        Infinity;
+
+                    for (
+                        let i = 0;
+                        i < 24;
+                        i++
+                    ) {
+                        const remoteDemand =
+                            hWeighted *
+                            cfg.safety /
+                            period;
+
+                        remoteUse =
+                            Math.min(
+                                remoteBudget,
+                                remoteDemand
+                            );
+
+                        const homeHack =
+                            Math.max(
+                                0,
+                                remoteDemand -
+                                    remoteBudget
+                            );
+
+                        homeUse =
+                            gwWeighted *
+                                cfg.safety /
+                                period +
+                            homeHack;
+
+                        if (
+                            homeUse <=
+                            homeBudget
+                        ) {
+                            break;
+                        }
+
+                        period =
+                            Math.ceil(
+                                period *
+                                Math.max(
+                                    1.02,
+                                    homeUse /
+                                        Math.max(
+                                            1,
+                                            homeBudget
+                                        )
+                                )
+                            );
+                    }
+
+                    if (
+                        !Number.isFinite(
+                            homeUse
+                        ) ||
+                        homeUse >
+                            homeBudget *
+                                1.001
+                    ) {
+                        continue;
+                    }
                 }
 
-                period =
-                    Math.ceil(
-                        period *
-                        Math.max(
-                            1.02,
-                            homeUse /
+                /*
+                 * =================================================
+                 * REMOTE_ALL
+                 * =================================================
+                 *
+                 * Model G/W at one core and place the entire
+                 * batch into the remote fleet.
+                 */
+                else {
+                    if (
+                        remoteBudget <= 0
+                    ) {
+                        continue;
+                    }
+
+                    const peakRemote =
+                        batch.h *
+                            env.workerRam.h +
+
+                        batch.w1 *
+                            env.workerRam.w +
+
+                        batch.g *
+                            env.workerRam.g +
+
+                        batch.w2 *
+                            env.workerRam.w;
+
+                    /*
+                     * One complete batch must physically fit.
+                     */
+                    if (
+                        peakRemote >
+                        remoteBudget *
+                            0.98
+                    ) {
+                        continue;
+                    }
+
+                    const remoteWeighted =
+                        batch.h *
+                            env.workerRam.h *
+                            (
+                                batch.hTime +
+                                cfg.launchLead
+                            ) +
+
+                        batch.w1 *
+                            env.workerRam.w *
+                            (
+                                batch.wTime +
+                                cfg.launchLead
+                            ) +
+
+                        batch.g *
+                            env.workerRam.g *
+                            (
+                                batch.gTime +
+                                cfg.launchLead
+                            ) +
+
+                        batch.w2 *
+                            env.workerRam.w *
+                            (
+                                batch.wTime +
+                                cfg.launchLead
+                            );
+
+                    remoteUse =
+                        Infinity;
+
+                    for (
+                        let i = 0;
+                        i < 24;
+                        i++
+                    ) {
+                        remoteUse =
+                            remoteWeighted *
+                            cfg.safety /
+                            period;
+
+                        if (
+                            remoteUse <=
+                            remoteBudget
+                        ) {
+                            break;
+                        }
+
+                        period =
+                            Math.ceil(
+                                period *
                                 Math.max(
-                                    1,
-                                    homeBudget
+                                    1.02,
+                                    remoteUse /
+                                        Math.max(
+                                            1,
+                                            remoteBudget
+                                        )
                                 )
-                        )
-                    );
-            }
+                            );
+                    }
 
-            if (
-                !Number.isFinite(
-                    homeUse
-                ) ||
-                homeUse >
-                    homeBudget *
-                        1.001
-            ) {
-                continue;
-            }
+                    if (
+                        !Number.isFinite(
+                            remoteUse
+                        ) ||
+                        remoteUse >
+                            remoteBudget *
+                                1.001
+                    ) {
+                        continue;
+                    }
 
-            const candidate:
-                LanePlan = {
-                ...batch,
+                    homeUse = 0;
+                }
 
-                gap,
-                period,
+                const candidate:
+                    LanePlan = {
+                    ...batch,
 
-                homeUse,
-                remoteUse,
-
-                evps:
-                    batch.expected *
-                    1000 /
+                    gap,
                     period,
 
-                ready:
-                    isReady(
-                        ns,
-                        target,
-                        cfg
-                    ),
-            };
+                    homeUse,
+                    remoteUse,
 
-            if (
-                !best ||
-                candidate.evps >
-                    best.evps
-            ) {
-                best =
-                    candidate;
+                    evps:
+                        batch.expected *
+                        1000 /
+                        period,
+
+                    ready:
+                        isReady(
+                            ns,
+                            target,
+                            cfg
+                        ),
+                };
+
+                if (
+                    !best ||
+                    candidate.evps >
+                        best.evps
+                ) {
+                    best =
+                        candidate;
+                }
             }
         }
     }
@@ -1879,7 +2145,8 @@ function choosePortfolio(
     env: Env,
     cfg: Config,
     controls: Controls,
-    preferred: string
+    preferred: string,
+    readyOnly = false
 ): Portfolio {
     const candidates:
         Candidate[] = [];
@@ -1933,6 +2200,13 @@ function choosePortfolio(
             );
 
         if (!plan) {
+            continue;
+        }
+
+        if (
+            readyOnly &&
+            !plan.ready
+        ) {
             continue;
         }
 
@@ -2231,6 +2505,70 @@ function choosePortfolio(
  * ================================================================
  */
 
+function startBackgroundPrep(
+    ns: NS,
+    target: string
+): boolean {
+    /*
+     * Do not launch duplicate preppers for the same target.
+     */
+    const existing =
+        ns.ps("home")
+            .find(
+                process =>
+                    process.filename ===
+                        "harvest.ts" &&
+                    String(
+                        process.args[0] ??
+                        ""
+                    ) ===
+                        target &&
+                    process.args.some(
+                        arg =>
+                            String(arg) ===
+                            "--prep-only"
+                    )
+            );
+
+    if (existing) {
+        return true;
+    }
+
+    /*
+     * Keep HOME out of background preparation.
+     *
+     * The current production lane may still depend heavily
+     * on home's CPU cores for efficient G/W.
+     *
+     * Our giant remote fleet handles the speculative prep.
+     */
+    const pid =
+        ns.run(
+            "harvest.ts",
+            1,
+
+            target,
+
+            "--prep-only",
+            "--no-home"
+        );
+
+    if (!pid) {
+        ns.tprint(
+            `[PREWARM] failed to launch ${target}`
+        );
+
+        return false;
+    }
+
+    ns.tprint(
+        `[PREWARM] ${target} started in background | PID ${pid}`
+    );
+
+    return true;
+}
+
+
 async function prepTarget(
     ns: NS,
     target: string,
@@ -2528,6 +2866,9 @@ function addBatch(
 
                 phase,
 
+                topology:
+                    lane.topology,
+
                 script,
                 threads,
 
@@ -2632,15 +2973,37 @@ function launchDue(
         let pids:
             number[] = [];
 
+        /*
+         * H always prefers remote.
+         *
+         * HOME_GW:
+         *   G/W stay on home.
+         *
+         * REMOTE_ALL:
+         *   every phase runs in the remote fleet.
+         */
         if (
             job.phase === "H"
         ) {
             pids =
-                launchHackDistributed(
+                launchDistributed(
                     ns,
                     job,
                     env,
-                    cfg
+                    cfg,
+                    true
+                );
+        } else if (
+            job.topology ===
+            "REMOTE_ALL"
+        ) {
+            pids =
+                launchDistributed(
+                    ns,
+                    job,
+                    env,
+                    cfg,
+                    false
                 );
         } else {
             const pid =
@@ -2665,7 +3028,9 @@ function launchDue(
                 );
 
             if (pid) {
-                pids = [pid];
+                pids = [
+                    pid,
+                ];
             }
         }
 
@@ -2677,7 +3042,7 @@ function launchDue(
                     false,
 
                 reason:
-                    `LAUNCH ${job.target} ${job.phase}`,
+                    `LAUNCH ${job.target} ${job.phase} ${job.topology}`,
             };
         }
 
@@ -2693,6 +3058,7 @@ function launchDue(
         ) {
             rt.pids.push({
                 pid,
+
                 batchId:
                     job.key,
             });
@@ -2706,11 +3072,12 @@ function launchDue(
 }
 
 
-function launchHackDistributed(
+function launchDistributed(
     ns: NS,
     job: Job,
     env: Env,
-    cfg: Config
+    cfg: Config,
+    allowHome: boolean
 ): number[] {
     let remaining =
         job.threads;
@@ -2718,12 +3085,25 @@ function launchHackDistributed(
     const pids:
         number[] = [];
 
-    let part = 0;
+    let part =
+        0;
 
-    const hosts = [
-        ...env.remoteHosts,
-        "home",
-    ];
+    const hosts =
+        allowHome
+            ? [
+                  ...env.remoteHosts,
+                  "home",
+              ]
+            : [
+                  ...env.remoteHosts,
+              ];
+
+    const scriptRam =
+        job.phase === "H"
+            ? env.workerRam.h
+            : job.phase === "G"
+                ? env.workerRam.g
+                : env.workerRam.w;
 
     for (
         const host
@@ -2738,7 +3118,7 @@ function launchHackDistributed(
         if (
             host !== "home" &&
             !ns.fileExists(
-                H,
+                job.script,
                 host
             )
         ) {
@@ -2774,7 +3154,10 @@ function launchHackDistributed(
         const fit =
             Math.floor(
                 usable /
-                env.workerRam.h
+                Math.max(
+                    scriptRam,
+                    1e-9
+                )
             );
 
         if (
@@ -2791,7 +3174,7 @@ function launchHackDistributed(
 
         const pid =
             ns.exec(
-                H,
+                job.script,
                 host,
                 use,
 
@@ -2814,12 +3197,20 @@ function launchHackDistributed(
             continue;
         }
 
-        pids.push(pid);
+        pids.push(
+            pid
+        );
 
         remaining -=
             use;
     }
 
+    /*
+     * Phase launches are atomic.
+     *
+     * Partial G/W is especially dangerous,
+     * because it destroys the batch state.
+     */
     if (
         remaining > 0
     ) {
@@ -2827,7 +3218,9 @@ function launchHackDistributed(
             const pid
             of pids
         ) {
-            ns.kill(pid);
+            ns.kill(
+                pid
+            );
         }
 
         return [];
@@ -3866,6 +4259,7 @@ function printPlan(
     ) {
         ns.tprint(
             `L${index + 1} ${lane.target} | ` +
+            `topology=${lane.topology} | ` +
             `take=${pct(lane.actualTake)} | ` +
             `gap=${lane.gap}ms | ` +
             `period=${lane.period}ms | ` +
