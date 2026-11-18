@@ -157,25 +157,26 @@ export async function main(ns: NS): Promise<void> {
             return b.maxRam - a.maxRam;
         });
 
+        printHeader(ns);
+
         ns.print(
             `7n8 NETMON | Hack ${hacking} | ` +
             `Openers ${openers}/5 | ` +
             `Servers ${servers.length}`
         );
 
-        ns.print(
-            "────────────────────────────────────────────────────────────────────────────────────────────────────────"
-        );
+        printHeader(ns);
 
-        ns.print(
-            "HOST               STATE    REQ PORT  RAM        MONEY              SEC        CHANCE  RUNNING"
-        );
+        for (let i = 0; i < rows.length; i++) {
+            const x = rows[i];
 
-        ns.print(
-            "────────────────────────────────────────────────────────────────────────────────────────────────────────"
-        );
+            // Repeat header every 12 rows so the columns
+            // are still readable when scrolling the tail.
+            if (i > 0 && i % 12 === 0) {
+                ns.print("");
+                printHeader(ns);
+            }
 
-        for (const x of rows) {
             const money =
                 x.maxMoney > 0
                     ? `${pct(
@@ -206,6 +207,20 @@ export async function main(ns: NS): Promise<void> {
 
         await ns.sleep(2000);
     }
+}
+
+function printHeader(ns: NS): void {
+    ns.print(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
+
+    ns.print(
+        "HOST               STATE    REQ PORT  RAM        MONEY       SEC        CHANCE  RUNNING"
+    );
+
+    ns.print(
+        "────────────────────────────────────────────────────────────────────────────────────────────────────────"
+    );
 }
 
 function scanAll(ns: NS): string[] {
