@@ -608,8 +608,8 @@ export async function main(
             cfg.takeMax,
 
         gapFloor:
-            Math.min(
-                ...cfg.gaps
+            initialGapFloor(
+                cfg.gaps
             ),
 
         /*
@@ -3278,11 +3278,21 @@ function adaptControls(
         metrics.reason.startsWith(
             "LAUNCH"
         );
-
+    
+    const efficiencyBad =
+    metrics.verified >=
+        Math.min(
+            10,
+            cfg.windowBatches
+        ) &&
+    metrics.realizedRatio <
+        0.80;
+    
     const unstable =
         jitterBad ||
         driftBad ||
-        launchBad;
+        launchBad ||
+        efficiencyBad;
 
     if (unstable) {
         controls.stableWindows = 0;
@@ -3307,7 +3317,10 @@ function adaptControls(
                 );
         }
 
-        if (driftBad) {
+        if (
+            driftBad ||
+            efficiencyBad
+        ) {
             controls.takeCap =
                 Math.max(
                     cfg.takeMin,
@@ -4046,4 +4059,18 @@ function fmtMoney(
         "$" +
         value.toFixed(0)
     );
+}
+
+function initialGapFloor(
+    gaps: number[]
+): number {
+    const safe =
+        gaps.filter(
+            gap =>
+                gap >= 125
+        );
+
+    return safe.length
+        ? Math.min(...safe)
+        : Math.max(...gaps);
 }
