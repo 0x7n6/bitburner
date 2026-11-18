@@ -157,8 +157,6 @@ export async function main(ns: NS): Promise<void> {
             return b.maxRam - a.maxRam;
         });
 
-        printHeader(ns);
-
         ns.print(
             `7n8 NETMON | Hack ${hacking} | ` +
             `Openers ${openers}/5 | ` +
