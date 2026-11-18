@@ -98,7 +98,7 @@ export async function main(ns) {
             case "🎯 Target intelligence":
                 await launchAndWait(
                     ns,
-                    "target.js",
+                    "target.ts",
                     [
                         "--top",
                         20,
