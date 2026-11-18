@@ -119,7 +119,7 @@ export async function main(ns: NS): Promise<number | void> {
 
                 await launchAndWait(
                     ns,
-                    "harvest.js",
+                    "harvest.ts",
                     [
                         target,
                         "--prep-only",
@@ -212,7 +212,7 @@ function showStatus(ns: NS): void {
                         "jit2.js",
                         "jit.js",
                         "farm.js",
-                        "harvest.js",
+                        "harvest.ts",
                     ].includes(
                         p.filename
                     )

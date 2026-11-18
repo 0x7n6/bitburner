@@ -201,7 +201,7 @@ export async function main(ns) {
         );
 
         ns.tprint(
-            `Run: harvest.js ${target} --prep-only`
+            `Run: harvest.ts ${target} --prep-only`
         );
 
         return;
@@ -803,7 +803,7 @@ export async function main(ns) {
         );
 
         ns.tprint(
-            `Recover: run harvest.js ${target} --prep-only`
+            `Recover: run harvest.ts ${target} --prep-only`
         );
     }
 }

@@ -925,7 +925,7 @@ export async function main(ns) {
 
         ns.tprint(
             `Recover with: ` +
-            `run harvest.js ${target} --prep-only --tail`
+            `run harvest.ts ${target} --prep-only --tail`
         );
     }
 }

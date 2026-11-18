@@ -161,7 +161,7 @@ export async function main(ns) {
         const file
         of [
             "shotgun-auto.js",
-            "harvest.js",
+            "harvest.ts",
             "h.js",
             "g.js",
             "w.js",
@@ -520,7 +520,7 @@ export async function main(ns) {
 
             childPid =
                 ns.run(
-                    "harvest.js",
+                    "harvest.ts",
                     1,
 
                     target,

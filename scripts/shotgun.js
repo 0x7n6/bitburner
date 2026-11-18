@@ -182,7 +182,7 @@ export async function main(ns) {
         );
 
         ns.tprint(
-            `Recover first: run harvest.js ${target} --prep-only --tail`
+            `Recover first: run harvest.ts ${target} --prep-only --tail`
         );
 
         return;
@@ -684,7 +684,7 @@ export async function main(ns) {
 
         ns.tprint(
             `Recover with: ` +
-            `run harvest.js ${target} --prep-only --tail`
+            `run harvest.ts ${target} --prep-only --tail`
         );
     }
 }
