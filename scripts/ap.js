@@ -130,7 +130,7 @@ export async function main(ns) {
             case "🌐 Network monitor":
                 await launchAndWait(
                     ns,
-                    "netmon.js",
+                    "netmon.ts",
                     []
                 );
                 break;
@@ -138,7 +138,7 @@ export async function main(ns) {
             case "🖥️ Neofetch":
                 await launchAndWait(
                     ns,
-                    "neofetch.js",
+                    "neofetch.ts",
                     []
                 );
                 break;
@@ -356,10 +356,12 @@ async function launchAndWait(
 
 function showTools(ns) {
     const files =
-        ns.ls(
-            "home",
-            ".js"
-        ).sort();
+        ns.ls("home")
+            .filter(
+                file =>
+                    /\.[jt]sx?$/.test(file)
+            )
+            .sort();
 
     ns.tprint("");
     ns.tprint(
