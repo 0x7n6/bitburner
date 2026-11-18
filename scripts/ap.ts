@@ -149,7 +149,7 @@ export async function main(ns: NS): Promise<number | void> {
             case "🛑 Stop all farm engines":
                 await launchAndWait(
                     ns,
-                    "stopfarm.js",
+                    "stopfarm.ts",
                     []
                 );
                 break;
