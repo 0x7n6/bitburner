@@ -1,1 +1,6 @@
 .DS_Store
+# Bitburner Remote API generated types
+NetScriptDefinitions.d.ts
+
+# Node / TypeScript
+node_modules/

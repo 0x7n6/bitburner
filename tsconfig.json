@@ -1,0 +1,25 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "allowJs": true,
+    "checkJs": false,
+    "paths": {
+      "@ns": [
+        "./NetScriptDefinitions.d.ts"
+      ]
+    }
+  },
+  "include": [
+    "scripts/**/*.ts",
+    "scripts/**/*.tsx",
+    "NetScriptDefinitions.d.ts"
+  ],
+  "exclude": [
+    "node_modules"
+  ]
+}

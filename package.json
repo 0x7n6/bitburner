@@ -1,0 +1,28 @@
+{
+  "name": "bitburner",
+  "version": "1.0.0",
+  "description": "",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "sync": "bitburner-filesync"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/0x7n6/bitburner.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/0x7n6/bitburner/issues"
+  },
+  "homepage": "https://github.com/0x7n6/bitburner#readme",
+  "devDependencies": {
+    "bitburner-filesync": "^1.2.0-beta4",
+    "typescript": "^7.0.2"
+  },
+  "private": true
+}
