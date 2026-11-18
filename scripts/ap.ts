@@ -13,10 +13,9 @@ export async function main(ns: NS): Promise<number | void> {
             {
                 type: "select",
                 choices: [
-                    "🚀 JIT4 AUTO - single target",
-                    "🧪 JIT4 optimizer dry-run",
-                    "🧪 JIT4 multi-target LAB",
-                    "🛡️ JIT3 stable fallback",
+                    "🚀 JIT5 closed-loop AUTO",
+                    "🧪 JIT5 planner dry-run",
+                    "🧪 JIT5 bounded benchmark",
                     "🎯 Target intelligence",
                     "🧹 Prep / repair target",
                     "🌐 Network monitor",
@@ -34,69 +33,36 @@ export async function main(ns: NS): Promise<number | void> {
         }
 
         switch (choice) {
-            case "🚀 JIT4 AUTO - single target":
+            case "🚀 JIT5 closed-loop AUTO":
                 return launch(
                     ns,
-                    "jit4.js",
+                    "jit5.ts",
                     [
-                        "--auto",
-                        "--targets",
-                        1,
-                        "--gaps",
-                        "200,175,150",
                         "--tail",
                     ]
                 );
 
-            case "🧪 JIT4 optimizer dry-run":
+            case "🧪 JIT5 planner dry-run":
                 await launchAndWait(
                     ns,
-                    "jit4.js",
+                    "jit5.ts",
                     [
-                        "--auto",
-                        "--targets",
-                        1,
-                        "--gaps",
-                        "200,175,150",
                         "--dry-run",
                         "--tail",
                     ]
                 );
                 break;
 
-            case "🧪 JIT4 multi-target LAB":
-                await launchAndWait(
-                    ns,
-                    "jit4.js",
-                    [
-                        "--auto",
-                        "--targets",
-                        2,
-                        "--gaps",
-                        "200,175,150",
-                        "--dry-run",
-                        "--tail",
-                    ]
-                );
-                break;
-
-            case "🛡️ JIT3 stable fallback": {
-                const target = await askTarget(
-                    ns,
-                    "phantasy"
-                );
-
-                if (!target) break;
-
+            case "🧪 JIT5 bounded benchmark":
                 return launch(
                     ns,
-                    "jit3.js",
+                    "jit5.ts",
                     [
-                        target,
+                        "--limit",
+                        40,
                         "--tail",
                     ]
                 );
-            }
 
             case "🎯 Target intelligence":
                 await launchAndWait(
@@ -207,11 +173,7 @@ function showStatus(ns: NS): void {
             .filter(
                 p =>
                     [
-                        "jit4.js",
-                        "jit3.js",
-                        "jit2.js",
-                        "jit.js",
-                        "farm.js",
+                        "jit5.ts",
                         "harvest.ts",
                     ].includes(
                         p.filename

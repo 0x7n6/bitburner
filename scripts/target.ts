@@ -107,9 +107,9 @@ export async function main(ns: NS): Promise<void> {
     // target.ts still works even if these files do not exist yet.
     // ------------------------------------------------------------
 
-    const H = "h.js";
-    const G = "g.js";
-    const W = "w.js";
+    const H = "h.ts";
+    const G = "g.ts";
+    const W = "w.ts";
 
     const hRam =
         ns.getScriptRam(H, "home") || 1.70;

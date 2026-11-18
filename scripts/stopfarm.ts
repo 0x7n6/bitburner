@@ -4,6 +4,10 @@ export async function main(ns: NS): Promise<void> {
     ns.disableLog("ALL");
 
     const victims = new Set([
+        "jit5.ts",
+        "j5h.ts",
+        "j5g.ts",
+        "j5w.ts",
         "jit4.js",
         "j4h.js",
         "j4g.js",
