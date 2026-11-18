@@ -1,0 +1,1 @@
+all .js scripts before migrate into .ts system. (check /checkpoint/18-11-26.md)
