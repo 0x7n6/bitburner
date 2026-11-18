@@ -229,6 +229,7 @@ interface Runtime {
     lastHackAt: number;
 
     jitters: number[];
+    lateBy: number[];
 
     driftCount: number;
     launchFailures: number;
@@ -253,6 +254,9 @@ interface TelemetryEvent {
     finishedAt: number;
 
     jitter: number;
+
+    baseTime?: number;
+    lateBy?: number;
 
     value: number;
 }
@@ -280,6 +284,7 @@ interface EpochMetrics {
     actualRate: number;
 
     p95Jitter: number;
+    p95LateBy: number;
 
     minGap: number;
 
@@ -306,17 +311,17 @@ export async function main(
         ["min-lane-gain", 0.03],
         ["max-period-ratio", 10],
 
-        ["reserve-pct", 0.20],
-        ["remote-reserve-pct", 0.08],
+        ["reserve-pct", 0.05],
+        ["remote-reserve-pct", 0.02],
 
         ["take-min", 0.05],
         ["take-max", 0.25],
         ["take-step", 0.025],
 
-        ["gaps", "200,175,150,125"],
+        ["gaps", "250,200,175,150,125,100,80,60,50"],
 
         ["guard", 120],
-        ["launch-lead", 1000],
+        ["launch-lead", 300],
 
         ["grow-safety", 1.02],
 
@@ -697,6 +702,7 @@ export async function main(
                 ns,
                 plan,
                 controls,
+                cfg,
                 true
             );
 
@@ -773,9 +779,15 @@ export async function main(
             controls.trialTwo &&
             plan.lanes.length < 2
         ) {
+            ns.tprint(
+                "[ADAPT] lane #2 not economically admissible " +
+                "under current RAM / target set; returning to single-lane optimization."
+            );
+
             controls.allowedTargets = 1;
             controls.trialTwo = false;
-            controls.laneCooldown = 2;
+            controls.laneCooldown = 3;
+            controls.stableWindows = 0;
         }
 
         deployWorkers(
@@ -826,6 +838,7 @@ export async function main(
             ns,
             plan,
             controls,
+            cfg,
             false,
             epoch
         );
@@ -2369,6 +2382,7 @@ function initRuntime(
         lastHackAt: 0,
 
         jitters: [],
+        lateBy: [],
 
         driftCount: 0,
         launchFailures: 0,
@@ -2882,6 +2896,18 @@ function drainTelemetry(
         );
 
         if (
+            typeof event.lateBy ===
+                "number"
+        ) {
+            rt.lateBy.push(
+                Math.max(
+                    0,
+                    event.lateBy
+                )
+            );
+        }
+
+        if (
             event.phase === "H"
         ) {
             batch.actualStolen +=
@@ -3234,6 +3260,12 @@ function summarizeEpoch(
                 0.95
             ),
 
+        p95LateBy:
+            percentile(
+                rt.lateBy,
+                0.95
+            ),
+
         minGap:
             Math.min(
                 ...plan.lanes.map(
@@ -3263,9 +3295,17 @@ function adaptControls(
     const jitterBad =
         metrics.p95Jitter >
         Math.max(
-            40,
+            12,
             metrics.minGap *
-                0.35
+                0.30
+        );
+
+    const lateBad =
+        metrics.p95LateBy >
+        Math.max(
+            10,
+            metrics.minGap *
+                0.20
         );
 
     const driftBad =
@@ -3278,21 +3318,12 @@ function adaptControls(
         metrics.reason.startsWith(
             "LAUNCH"
         );
-    
-    const efficiencyBad =
-    metrics.verified >=
-        Math.min(
-            10,
-            cfg.windowBatches
-        ) &&
-    metrics.realizedRatio <
-        0.80;
-    
+
     const unstable =
         jitterBad ||
+        lateBad ||
         driftBad ||
-        launchBad ||
-        efficiencyBad;
+        launchBad;
 
     if (unstable) {
         controls.stableWindows = 0;
@@ -3308,6 +3339,7 @@ function adaptControls(
 
         if (
             jitterBad ||
+            lateBad ||
             launchBad
         ) {
             controls.gapFloor =
@@ -3315,12 +3347,16 @@ function adaptControls(
                     controls.gapFloor,
                     cfg.gaps
                 );
+
+            cfg.launchLead =
+                Math.min(
+                    1500,
+                    cfg.launchLead +
+                        100
+                );
         }
 
-        if (
-            driftBad ||
-            efficiencyBad
-        ) {
+        if (driftBad) {
             controls.takeCap =
                 Math.max(
                     cfg.takeMin,
@@ -3340,6 +3376,26 @@ function adaptControls(
     }
 
     controls.stableWindows++;
+
+    /*
+     * Single-lane measured throughput is noisy because
+     * hacks are probabilistic. Keep an EWMA baseline
+     * instead of trusting one 40-batch window.
+     */
+    if (
+        controls.allowedTargets ===
+            1 &&
+        !controls.trialTwo
+    ) {
+        controls.baselineSingleRate =
+            controls.baselineSingleRate ===
+                null
+                ? metrics.actualRate
+                : controls.baselineSingleRate *
+                      0.65 +
+                  metrics.actualRate *
+                      0.35;
+    }
 
     /*
      * Two-lane experiment completed.
@@ -3426,17 +3482,44 @@ function adaptControls(
             1 &&
         cfg.maxTargets >= 2 &&
         controls.laneCooldown === 0 &&
-        controls.stableWindows >= 1
+        controls.stableWindows >= 2
     ) {
-        controls.baselineSingleRate =
-            metrics.actualRate;
-
         controls.allowedTargets = 2;
         controls.trialTwo = true;
 
         ns.tprint(
             `[ADAPT] trial lane #2 | baseline=` +
             `${fmtMoney(metrics.actualRate)}/s`
+        );
+
+        return;
+    }
+
+    /*
+     * Launch-lead hill climb.
+     *
+     * If workers consistently start before their required
+     * operation start, reduce idle RAM residency.
+     */
+    if (
+        metrics.p95LateBy <= 2 &&
+        metrics.p95Jitter <=
+            Math.max(
+                10,
+                metrics.minGap *
+                    0.20
+            ) &&
+        cfg.launchLead > 100
+    ) {
+        cfg.launchLead =
+            Math.max(
+                100,
+                cfg.launchLead -
+                    50
+            );
+
+        ns.tprint(
+            `[ADAPT] launchLead -> ${cfg.launchLead}ms`
         );
 
         return;
@@ -3691,6 +3774,7 @@ function printPlan(
     ns: NS,
     plan: Portfolio,
     controls: Controls,
+    cfg: Config,
     dryRun: boolean,
     epoch = 0
 ): void {
@@ -3706,6 +3790,7 @@ function printPlan(
         `controls | ` +
         `takeCap=${pct(controls.takeCap)} | ` +
         `gapFloor=${controls.gapFloor}ms | ` +
+        `lead=${cfg.launchLead}ms | ` +
         `allowedTargets=${controls.allowedTargets}` +
         (
             controls.trialTwo
@@ -3747,6 +3832,7 @@ function printMetrics(
         `actual=${fmtMoney(metrics.actualRate)}/s | ` +
         `realized=${pct(metrics.realizedRatio)} | ` +
         `p95-jitter=${metrics.p95Jitter.toFixed(1)}ms | ` +
+        `p95-late=${metrics.p95LateBy.toFixed(1)}ms | ` +
         `drift=${metrics.driftCount} | ` +
         `launchFail=${metrics.launchFailures}`
     );
@@ -3834,10 +3920,15 @@ function parseGaps(
     return unique.length
         ? unique
         : [
+              50,
+              60,
+              80,
+              100,
               125,
               150,
               175,
               200,
+              250,
           ];
 }
 
@@ -4067,7 +4158,7 @@ function initialGapFloor(
     const safe =
         gaps.filter(
             gap =>
-                gap >= 125
+                gap >= 100
         );
 
     return safe.length
