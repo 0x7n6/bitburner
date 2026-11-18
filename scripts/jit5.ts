@@ -70,6 +70,9 @@ interface Controls {
     trialTwo: boolean;
 
     laneCooldown: number;
+
+    laneRejectedSignature:
+        string | null;
 }
 
 interface RamCosts {
@@ -316,12 +319,12 @@ export async function main(
 
         ["take-min", 0.05],
         ["take-max", 0.25],
-        ["take-step", 0.025],
+        ["take-step", 0.01],
 
         ["gaps", "250,200,175,150,125,100,80,60,50"],
 
         ["guard", 120],
-        ["launch-lead", 300],
+        ["launch-lead", 100],
 
         ["grow-safety", 1.02],
 
@@ -543,7 +546,7 @@ export async function main(
         debug:
             Boolean(f.debug),
 
-        safety: 1.15,
+        safety: 1.10,
 
         fallbackSafety: 1.15,
     };
@@ -634,6 +637,9 @@ export async function main(
             false,
 
         laneCooldown: 0,
+
+        laneRejectedSignature:
+            null,
     };
 
     let totalVerified = 0;
@@ -788,6 +794,9 @@ export async function main(
             controls.trialTwo = false;
             controls.laneCooldown = 3;
             controls.stableWindows = 0;
+
+            controls.laneRejectedSignature =
+                env.signature;
         }
 
         deployWorkers(
@@ -1031,7 +1040,8 @@ export async function main(
             controls,
             metrics,
             plan,
-            cfg
+            cfg,
+            env.signature
         );
 
         if (
@@ -1669,10 +1679,10 @@ function optimizeTarget(
         ) {
             const minPeriod =
                 Math.max(
-                    4 *
+                    3 *
                         gap +
                         cfg.guard,
-                    500
+                    250
                 );
 
             /*
@@ -3290,7 +3300,8 @@ function adaptControls(
     controls: Controls,
     metrics: EpochMetrics,
     plan: Portfolio,
-    cfg: Config
+    cfg: Config,
+    environmentSignature: string
 ): void {
     const jitterBad =
         metrics.p95Jitter >
@@ -3352,7 +3363,14 @@ function adaptControls(
                 Math.min(
                     1500,
                     cfg.launchLead +
-                        100
+                        50
+                );
+
+            cfg.safety =
+                Math.min(
+                    1.20,
+                    cfg.safety +
+                        0.03
                 );
         }
 
@@ -3369,6 +3387,8 @@ function adaptControls(
             `[ADAPT] BACKOFF | ` +
             `takeCap=${pct(controls.takeCap)} | ` +
             `gapFloor=${controls.gapFloor}ms | ` +
+            `lead=${cfg.launchLead}ms | ` +
+            `safety=${cfg.safety.toFixed(3)} | ` +
             `lanes=${controls.allowedTargets}`
         );
 
@@ -3378,60 +3398,69 @@ function adaptControls(
     controls.stableWindows++;
 
     /*
-     * Single-lane measured throughput is noisy because
-     * hacks are probabilistic. Keep an EWMA baseline
-     * instead of trusting one 40-batch window.
+     * Measured throughput contains hack RNG noise.
+     * Smooth it instead of trusting one short window.
      */
     if (
-        controls.allowedTargets ===
-            1 &&
+        controls.allowedTargets === 1 &&
         !controls.trialTwo
     ) {
         controls.baselineSingleRate =
-            controls.baselineSingleRate ===
-                null
+            controls.baselineSingleRate === null
                 ? metrics.actualRate
                 : controls.baselineSingleRate *
-                      0.65 +
+                      0.70 +
                   metrics.actualRate *
-                      0.35;
+                      0.30;
     }
 
     /*
-     * Two-lane experiment completed.
+     * A real multi-lane experiment finished.
      */
-    if (
-        controls.trialTwo
-    ) {
+    if (controls.trialTwo) {
         const baseline =
-            controls
-                .baselineSingleRate;
+            controls.baselineSingleRate;
 
         const keep =
             plan.lanes.length >= 2 &&
             baseline !== null &&
             metrics.actualRate >=
                 baseline *
-                (
-                    1 +
-                    cfg.minLaneGain
-                );
+                    (
+                        1 +
+                        cfg.minLaneGain
+                    );
 
         if (keep) {
-            controls.allowedTargets = 2;
-            controls.trialTwo = false;
+            controls.allowedTargets =
+                plan.lanes.length;
+
+            controls.trialTwo =
+                false;
+
+            controls.laneRejectedSignature =
+                null;
 
             ns.tprint(
                 `[ADAPT] lane #2 ACCEPTED | ` +
                 `${fmtMoney(metrics.actualRate)}/s`
             );
         } else {
-            controls.allowedTargets = 1;
-            controls.trialTwo = false;
-            controls.laneCooldown = 2;
+            controls.allowedTargets =
+                1;
+
+            controls.trialTwo =
+                false;
+
+            controls.laneCooldown =
+                3;
+
+            controls.laneRejectedSignature =
+                environmentSignature;
 
             ns.tprint(
-                "[ADAPT] lane #2 REJECTED"
+                "[ADAPT] lane #2 REJECTED; " +
+                "suppressing retry until environment changes."
             );
         }
 
@@ -3439,95 +3468,108 @@ function adaptControls(
     }
 
     /*
-     * Existing multi-target portfolio
-     * must keep proving its marginal value.
+     * Existing lane #2 must continuously justify itself.
      */
     if (
-        controls.allowedTargets ===
-            2 &&
-        controls.baselineSingleRate !==
-            null &&
+        controls.allowedTargets >= 2 &&
+        controls.baselineSingleRate !== null &&
         metrics.actualRate <
-            controls
-                .baselineSingleRate *
+            controls.baselineSingleRate *
                 (
                     1 +
                     cfg.minLaneGain *
                         0.5
                 )
     ) {
-        controls.allowedTargets = 1;
-        controls.laneCooldown = 2;
+        controls.allowedTargets =
+            1;
+
+        controls.laneCooldown =
+            3;
+
+        controls.laneRejectedSignature =
+            environmentSignature;
 
         ns.tprint(
-            "[ADAPT] lane #2 lost marginal value; reverting."
+            "[ADAPT] extra lane lost marginal value; reverting."
         );
 
         return;
     }
 
     if (
-        controls.laneCooldown >
-        0
+        controls.laneCooldown > 0
     ) {
         controls.laneCooldown--;
     }
 
     /*
-     * Establish single-lane baseline,
-     * then actually TRIAL a second lane.
-     */
-    if (
-        controls.allowedTargets ===
-            1 &&
-        cfg.maxTargets >= 2 &&
-        controls.laneCooldown === 0 &&
-        controls.stableWindows >= 2
-    ) {
-        controls.allowedTargets = 2;
-        controls.trialTwo = true;
-
-        ns.tprint(
-            `[ADAPT] trial lane #2 | baseline=` +
-            `${fmtMoney(metrics.actualRate)}/s`
-        );
-
-        return;
-    }
-
-    /*
-     * Launch-lead hill climb.
+     * ========================================================
+     * SELF-OVERCLOCK
      *
-     * If workers consistently start before their required
-     * operation start, reduce idle RAM residency.
+     * We change the complete timing envelope one controlled
+     * step per healthy epoch.
+     * ========================================================
      */
+
+    let overclocked =
+        false;
+
     if (
-        metrics.p95LateBy <= 2 &&
-        metrics.p95Jitter <=
-            Math.max(
-                10,
-                metrics.minGap *
-                    0.20
-            ) &&
-        cfg.launchLead > 100
+        cfg.launchLead > 50
     ) {
         cfg.launchLead =
             Math.max(
-                100,
+                50,
                 cfg.launchLead -
-                    50
+                    25
             );
 
+        overclocked =
+            true;
+    }
+
+    if (
+        cfg.safety > 1.03
+    ) {
+        cfg.safety =
+            Math.max(
+                1.03,
+                cfg.safety -
+                    0.02
+            );
+
+        overclocked =
+            true;
+    }
+
+    if (
+        controls.gapFloor > 50
+    ) {
+        controls.gapFloor =
+            nextSmallerGap(
+                controls.gapFloor,
+                cfg.gaps
+            );
+
+        overclocked =
+            true;
+    }
+
+    if (overclocked) {
         ns.tprint(
-            `[ADAPT] launchLead -> ${cfg.launchLead}ms`
+            `[ADAPT] OVERCLOCK | ` +
+            `gap=${controls.gapFloor}ms | ` +
+            `lead=${cfg.launchLead}ms | ` +
+            `safety=${cfg.safety.toFixed(3)}`
         );
 
         return;
     }
 
     /*
-     * Recover aggression after a
-     * previous backoff.
+     * Recover hack aggression if a previous drift event
+     * forced takeCap downward.
      */
     if (
         controls.takeCap <
@@ -3550,26 +3592,41 @@ function adaptControls(
         return;
     }
 
-    const minimumGap =
-        Math.min(
-            ...cfg.gaps
-        );
-
+    /*
+     * Only search for lane #2 AFTER the single-target engine
+     * has reached its current timing envelope.
+     *
+     * Also don't retry a portfolio that was already proven
+     * economically useless under the same environment.
+     */
     if (
-        controls.gapFloor >
-        minimumGap
+        controls.allowedTargets === 1 &&
+        cfg.maxTargets >= 2 &&
+        controls.laneCooldown === 0 &&
+        controls.stableWindows >= 2 &&
+        controls.laneRejectedSignature !==
+            environmentSignature
     ) {
-        controls.gapFloor =
-            nextSmallerGap(
-                controls.gapFloor,
-                cfg.gaps
-            );
+        controls.allowedTargets =
+            2;
+
+        controls.trialTwo =
+            true;
 
         ns.tprint(
-            `[ADAPT] tighten gapFloor -> ` +
-            `${controls.gapFloor}ms`
+            `[ADAPT] trial lane #2 | baseline=` +
+            `${
+                controls.baselineSingleRate === null
+                    ? "-"
+                    : fmtMoney(
+                          controls.baselineSingleRate
+                      ) + "/s"
+            }`
         );
+
+        return;
     }
+
 }
 
 
@@ -3791,6 +3848,7 @@ function printPlan(
         `takeCap=${pct(controls.takeCap)} | ` +
         `gapFloor=${controls.gapFloor}ms | ` +
         `lead=${cfg.launchLead}ms | ` +
+        `safety=${cfg.safety.toFixed(3)} | ` +
         `allowedTargets=${controls.allowedTargets}` +
         (
             controls.trialTwo
