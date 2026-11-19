@@ -58,6 +58,27 @@ interface Config {
     pidSoftLimit: number;
     pidHardLimit: number;
 
+    /*
+     * γ3.5 PREDICTIVE CONCURRENCY
+     *
+     * RAM capacity != runtime scheduler capacity.
+     */
+    pidPlanHeadroom: number;
+    pidEstimateSafety: number;
+
+    /*
+     * Bootstrap readiness remains strict.
+     * These thresholds are for an already-running continuous pipe.
+     */
+    driftMoney: number;
+    driftSec: number;
+
+    driftHardMoney: number;
+    driftHardSec: number;
+
+    driftConfirm: number;
+    driftSampleMs: number;
+
     reevalMs: number;
     envMs: number;
 
@@ -196,6 +217,11 @@ interface LanePlan extends BatchModel {
     gap: number;
     period: number;
 
+    /*
+     * Estimated steady-state concurrent Netscript processes.
+     */
+    estimatedPids: number;
+
     homeUse: number;
     remoteUse: number;
 
@@ -308,6 +334,19 @@ interface Runtime {
     lateBy: number[];
 
     driftCount: number;
+
+    driftStreaks:
+        Map<
+            string,
+            number
+        >;
+
+    driftSampleAt:
+        Map<
+            string,
+            number
+        >;
+
     launchFailures: number;
 
     stopScheduling: boolean;
@@ -430,6 +469,28 @@ export async function main(
          */
         ["pid-soft-limit", 8000],
         ["pid-hard-limit", 9500],
+
+        /*
+         * Aim below the runtime soft ceiling.
+         *
+         * 8000 * .85 = 6800 predicted concurrent PIDs.
+         */
+        ["pid-plan-headroom", 0.85],
+        ["pid-estimate-safety", 1.15],
+
+        /*
+         * Continuous runtime envelope.
+         *
+         * A 0.5% transient money miss is NOT a reactor SCRAM.
+         */
+        ["drift-money", 0.97],
+        ["drift-sec", 0.25],
+
+        ["drift-hard-money", 0.90],
+        ["drift-hard-sec", 1.00],
+
+        ["drift-confirm", 4],
+        ["drift-sample-ms", 250],
 
         ["reeval-ms", 120000],
         ["env-ms", 5000],
@@ -623,6 +684,80 @@ export async function main(
                 )
             ),
 
+        pidPlanHeadroom:
+            clamp(
+                Number(
+                    f["pid-plan-headroom"]
+                ) || 0.85,
+                0.50,
+                0.95
+            ),
+
+        pidEstimateSafety:
+            clamp(
+                Number(
+                    f["pid-estimate-safety"]
+                ) || 1.15,
+                1.00,
+                2.00
+            ),
+
+        driftMoney:
+            clamp(
+                Number(
+                    f["drift-money"]
+                ) || 0.97,
+                0.50,
+                0.9999
+            ),
+
+        driftSec:
+            clamp(
+                Number(
+                    f["drift-sec"]
+                ) || 0.25,
+                0.01,
+                10
+            ),
+
+        driftHardMoney:
+            clamp(
+                Number(
+                    f["drift-hard-money"]
+                ) || 0.90,
+                0.10,
+                0.999
+            ),
+
+        driftHardSec:
+            clamp(
+                Number(
+                    f["drift-hard-sec"]
+                ) || 1.00,
+                0.05,
+                50
+            ),
+
+        driftConfirm:
+            Math.max(
+                2,
+                Math.floor(
+                    Number(
+                        f["drift-confirm"]
+                    ) || 4
+                )
+            ),
+
+        driftSampleMs:
+            Math.max(
+                100,
+                Math.floor(
+                    Number(
+                        f["drift-sample-ms"]
+                    ) || 250
+                )
+            ),
+
         reevalMs:
             Math.max(
                 30000,
@@ -811,7 +946,7 @@ export async function main(
     );
 
     ns.tprint(
-        `γ3.2 PRODUCTION LOCK | ` +
+        `γ3.5 PREDICTIVE CONCURRENCY | ` +
         `takeStart=${pct(controls.takeCap)} | ` +
         `takeCeiling=${pct(cfg.takeMax)} | ` +
         `multiLane=${
@@ -820,7 +955,12 @@ export async function main(
                 : "LOCKED"
         } | ` +
         `pidSoft=${cfg.pidSoftLimit} | ` +
-        `pidHard=${cfg.pidHardLimit}`
+        `pidHard=${cfg.pidHardLimit} | ` +
+        `pidPlan=${Math.floor(
+            cfg.pidSoftLimit *
+            cfg.pidPlanHeadroom
+        )} | ` +
+        `driftSoft=${pct(cfg.driftMoney)}x${cfg.driftConfirm}`
     );
 
     while (true) {
@@ -2087,6 +2227,134 @@ function modelBatch(
 }
 
 
+function estimateConcurrentPids(
+    batch: BatchModel,
+    period: number,
+    cfg: Config
+): number {
+    const cadence =
+        Math.max(
+            1,
+            period
+        );
+
+    const h =
+        Math.ceil(
+            (
+                batch.hTime +
+                cfg.launchLead
+            ) /
+            cadence
+        );
+
+    const w1 =
+        Math.ceil(
+            (
+                batch.wTime +
+                cfg.launchLead
+            ) /
+            cadence
+        );
+
+    const g =
+        Math.ceil(
+            (
+                batch.gTime +
+                cfg.launchLead
+            ) /
+            cadence
+        );
+
+    const w2 =
+        Math.ceil(
+            (
+                batch.wTime +
+                cfg.launchLead
+            ) /
+            cadence
+        );
+
+    const raw =
+        h +
+        w1 +
+        g +
+        w2;
+
+    return Math.ceil(
+        raw *
+        cfg.pidEstimateSafety
+    );
+}
+
+
+function fitPidEnvelope(
+    batch: BatchModel,
+    initialPeriod: number,
+    cfg: Config
+): {
+    period: number;
+    estimatedPids: number;
+} {
+    let period =
+        Math.max(
+            1,
+            initialPeriod
+        );
+
+    const target =
+        Math.max(
+            256,
+            Math.floor(
+                cfg.pidSoftLimit *
+                cfg.pidPlanHeadroom
+            )
+        );
+
+    let estimatedPids =
+        estimateConcurrentPids(
+            batch,
+            period,
+            cfg
+        );
+
+    /*
+     * Widen only the inter-batch cadence.
+     *
+     * Internal HWGW geometry remains:
+     *
+     * H -> W1 -> G -> W2
+     */
+    for (
+        let i = 0;
+        i < 24 &&
+        estimatedPids > target;
+        i++
+    ) {
+        period =
+            Math.ceil(
+                period *
+                Math.max(
+                    1.02,
+                    estimatedPids /
+                    target
+                )
+            );
+
+        estimatedPids =
+            estimateConcurrentPids(
+                batch,
+                period,
+                cfg
+            );
+    }
+
+    return {
+        period,
+        estimatedPids,
+    };
+}
+
+
 function optimizeTarget(
     ns: NS,
     target: string,
@@ -2469,12 +2737,40 @@ function optimizeTarget(
                     homeUse = 0;
                 }
 
+                /*
+                 * RAM decides whether a batch physically fits.
+                 *
+                 * PID pressure decides whether its cadence is
+                 * sustainable by the game runtime.
+                 */
+                const pidFit =
+                    fitPidEnvelope(
+                        batch,
+                        period,
+                        cfg
+                    );
+
+                period =
+                    pidFit.period;
+
+                const estimatedPids =
+                    pidFit.estimatedPids;
+
+                if (
+                    estimatedPids >
+                    cfg.pidHardLimit
+                ) {
+                    continue;
+                }
+
                 const candidate:
                     LanePlan = {
                     ...batch,
 
                     gap,
                     period,
+
+                    estimatedPids,
 
                     homeUse,
                     remoteUse,
@@ -3104,6 +3400,13 @@ function initRuntime(
         lateBy: [],
 
         driftCount: 0,
+
+        driftStreaks:
+            new Map(),
+
+        driftSampleAt:
+            new Map(),
+
         launchFailures: 0,
 
         stopScheduling:
@@ -3919,24 +4222,95 @@ function verifyDue(
             sec -
             min;
 
+        const softDrift =
+            moneyRatio <
+                cfg.driftMoney ||
+            secDelta >
+                cfg.driftSec;
+
+        const hardDrift =
+            moneyRatio <
+                cfg.driftHardMoney ||
+            secDelta >
+                cfg.driftHardSec;
+
+        let driftReason =
+            "";
+
+        /*
+         * Genuine target collapse trips immediately.
+         */
         if (
             !rt.stopScheduling &&
-            (
-                moneyRatio <
-                    cfg.prepMoney ||
-                secDelta >
-                    cfg.prepSec
-            )
+            hardDrift
         ) {
+            driftReason =
+                `DRIFT-HARD ${batch.target} ` +
+                `money=${pct(moneyRatio)} ` +
+                `secΔ=${secDelta.toFixed(3)}`;
+        }
+
+        /*
+         * Mild deviations are only evidence when they persist.
+         *
+         * Many batches can verify in one event-loop tick.
+         * They count as ONE state sample, not N failures.
+         */
+        if (
+            !driftReason
+        ) {
+            const lastSample =
+                rt.driftSampleAt.get(
+                    batch.target
+                ) ??
+                0;
+
+            if (
+                now -
+                    lastSample >=
+                cfg.driftSampleMs
+            ) {
+                rt.driftSampleAt.set(
+                    batch.target,
+                    now
+                );
+
+                const streak =
+                    softDrift
+                        ? (
+                              rt.driftStreaks.get(
+                                  batch.target
+                              ) ??
+                              0
+                          ) + 1
+                        : 0;
+
+                rt.driftStreaks.set(
+                    batch.target,
+                    streak
+                );
+
+                if (
+                    !rt.stopScheduling &&
+                    streak >=
+                        cfg.driftConfirm
+                ) {
+                    driftReason =
+                        `DRIFT-PERSIST ${batch.target} ` +
+                        `money=${pct(moneyRatio)} ` +
+                        `secΔ=${secDelta.toFixed(3)} ` +
+                        `streak=${streak}`;
+                }
+            }
+        }
+
+        if (driftReason) {
             rt.driftCount++;
 
             return {
                 newVerified,
-
                 reason:
-                    `DRIFT ${batch.target} ` +
-                    `money=${pct(moneyRatio)} ` +
-                    `secΔ=${secDelta.toFixed(3)}`,
+                    driftReason,
             };
         }
     }
@@ -5484,6 +5858,7 @@ function printPlan(
             `take=${pct(lane.actualTake)} | ` +
             `gap=${lane.gap}ms | ` +
             `period=${lane.period}ms | ` +
+            `pidEst=${lane.estimatedPids} | ` +
             `H/G/W1/W2=${lane.h}/${lane.g}/${lane.w1}/${lane.w2} | ` +
             `EV=${fmtMoney(lane.evps)}/s`
         );

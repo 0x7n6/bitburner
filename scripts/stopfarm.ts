@@ -49,6 +49,9 @@ export async function main(
 
             "harvest.ts",
 
+            "share.ts",
+            "share-worker.ts",
+
             "h.ts",
             "g.ts",
             "w.ts",

@@ -17,6 +17,7 @@ export async function main(ns: NS): Promise<number | void> {
                     "🧪 JIT5 planner dry-run",
                     "🧪 JIT5 bounded benchmark",
                     "🎯 Target intelligence",
+                    "🔎 Find server path",
                     "🧹 Prep / repair target",
                     "🌐 Network monitor",
                     "🖥️ Neofetch",
@@ -74,6 +75,28 @@ export async function main(ns: NS): Promise<number | void> {
                     ]
                 );
                 break;
+
+            case "🔎 Find server path": {
+                const target =
+                    await askTarget(
+                        ns,
+                        "run4theh111z"
+                    );
+
+                if (!target) {
+                    break;
+                }
+
+                await launchAndWait(
+                    ns,
+                    "find.ts",
+                    [
+                        target,
+                    ]
+                );
+
+                break;
+            }
 
             case "🧹 Prep / repair target": {
                 const target = await askTarget(

@@ -6,6 +6,9 @@ const ENGINE =
 const PROGRESSION =
     "progression.ts";
 
+const SHARE_MANAGER =
+    "share.ts";
+
 const PAUSE_FILE =
     ".7n8-pause.txt";
 
@@ -184,6 +187,23 @@ export async function main(
             supervisor,
             now
         );
+
+        /*
+         * Share is a home-only opportunistic service.
+         * share.ts itself yields whenever production/prep
+         * needs home RAM.
+         */
+        if (
+            ns.fileExists(
+                SHARE_MANAGER,
+                "home"
+            )
+        ) {
+            ensureSingleton(
+                ns,
+                SHARE_MANAGER
+            );
+        }
 
         if (
             singularity &&
