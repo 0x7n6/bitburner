@@ -9,6 +9,12 @@ const PROGRESSION =
 const SHARE_MANAGER =
     "share.ts";
 
+const TRADER =
+    "trader.ts";
+
+const TRADER_DISABLED_FILE =
+    ".7n8-trader-disabled.txt";
+
 const PAUSE_FILE =
     ".7n8-pause.txt";
 
@@ -145,6 +151,18 @@ export async function main(
             );
         }
 
+        /*
+         * STOCK TRADER
+         *
+         * Independent economic subsystem.
+         *
+         * Deliberately supervised BEFORE farm pause handling:
+         * stp pauses JIT5, not the stock market.
+         */
+        superviseTrader(
+            ns
+        );
+
         const paused =
             ns.fileExists(
                 PAUSE_FILE,
@@ -222,6 +240,52 @@ export async function main(
             cycle
         );
     }
+}
+
+
+function superviseTrader(
+    ns: NS
+): void {
+    /*
+     * Trader is a separate economic subsystem.
+     *
+     * .7n8-pause.txt controls JIT5/farming only.
+     * Trader has its own lifecycle through traderctl.ts.
+     */
+    if (
+        ns.fileExists(
+            TRADER_DISABLED_FILE,
+            "home"
+        )
+    ) {
+        return;
+    }
+
+    if (
+        !ns.fileExists(
+            TRADER,
+            "home"
+        )
+    ) {
+        return;
+    }
+
+    /*
+     * Trader v1 requires exact 4S information.
+     *
+     * Do not fall back to noisy pre-4S estimation.
+     */
+    if (
+        !ns.stock.hasTixApiAccess() ||
+        !ns.stock.has4SDataTixApi()
+    ) {
+        return;
+    }
+
+    ensureSingleton(
+        ns,
+        TRADER
+    );
 }
 
 

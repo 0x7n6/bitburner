@@ -16,6 +16,10 @@ export async function main(ns: NS): Promise<number | void> {
                     "🚀 JIT5 closed-loop AUTO",
                     "🧪 JIT5 planner dry-run",
                     "🧪 JIT5 bounded benchmark",
+                    "📈 Start stock trader",
+                    "🛑 Stop stock trader",
+                    "💧 Drain trader for augmentation",
+                    "📊 Stock trader status",
                     "🎯 Target intelligence",
                     "🔎 Find server path",
                     "🧹 Prep / repair target",
@@ -64,6 +68,46 @@ export async function main(ns: NS): Promise<number | void> {
                         "--tail",
                     ]
                 );
+
+            case "📈 Start stock trader":
+                await launchAndWait(
+                    ns,
+                    "traderctl.ts",
+                    [
+                        "start",
+                    ]
+                );
+                break;
+
+            case "🛑 Stop stock trader":
+                await launchAndWait(
+                    ns,
+                    "traderctl.ts",
+                    [
+                        "stop",
+                    ]
+                );
+                break;
+
+            case "💧 Drain trader for augmentation":
+                await launchAndWait(
+                    ns,
+                    "traderctl.ts",
+                    [
+                        "drain",
+                    ]
+                );
+                break;
+
+            case "📊 Stock trader status":
+                await launchAndWait(
+                    ns,
+                    "traderctl.ts",
+                    [
+                        "status",
+                    ]
+                );
+                break;
 
             case "🎯 Target intelligence":
                 await launchAndWait(
@@ -207,6 +251,14 @@ function showStatus(ns: NS): void {
                     p.filename
             );
 
+    const trader =
+        ns.ps("home")
+            .find(
+                p =>
+                    p.filename ===
+                    "trader.ts"
+            );
+
     ns.tprint("");
     ns.tprint(
         "╔══════════════════════════════════════════╗"
@@ -247,6 +299,14 @@ function showStatus(ns: NS): void {
             engines.length
                 ? engines.join(", ")
                 : "IDLE"
+        }`
+    );
+
+    ns.tprint(
+        `Trader    : ${
+            trader
+                ? `ONLINE (${trader.pid})`
+                : "OFFLINE"
         }`
     );
 
