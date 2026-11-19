@@ -27,6 +27,8 @@ interface Config {
     minLaneGain: number;
     maxPeriodRatio: number;
 
+    experimentalMultiLane: boolean;
+
     reservePct: number;
     remoteReservePct: number;
 
@@ -46,6 +48,16 @@ interface Config {
 
     windowBatches: number;
 
+    /*
+     * γ3.4 POLICY-ISOLATED GOVERNOR
+     *
+     * RAM capacity is not the same as runtime scheduler capacity.
+     * Thousands of long-lived Netscript processes can saturate
+     * the game/browser event loop before RAM is exhausted.
+     */
+    pidSoftLimit: number;
+    pidHardLimit: number;
+
     reevalMs: number;
     envMs: number;
 
@@ -61,6 +73,25 @@ interface Config {
     fallbackSafety: number;
 }
 
+interface StabilityProfile {
+    key: string;
+
+    target: string;
+    topology: Topology;
+
+    takeCap: number;
+    learnedTakeCeiling: number;
+
+    stableWindows: number;
+    takeProbeCooldown: number;
+
+    baselineSingleRate:
+        number | null;
+
+    failures: number;
+}
+
+
 interface Controls {
     takeCap: number;
     gapFloor: number;
@@ -68,6 +99,36 @@ interface Controls {
     allowedTargets: number;
 
     stableWindows: number;
+
+    /*
+     * γ3.3 LEARNED STABILITY GOVERNOR
+     *
+     * The configured takeMax is only the absolute search ceiling.
+     * This learned ceiling represents the highest aggression that
+     * has survived real runtime pressure.
+     */
+    learnedTakeCeiling: number;
+
+    /*
+     * Healthy measurement windows required before reopening
+     * another +takeStep probe.
+     */
+    takeProbeCooldown: number;
+
+    /*
+     * Learned aggression MUST be scoped to the workload that
+     * produced the evidence.
+     *
+     * 40% on n00dles/HOME_GW says nothing about
+     * 40% on alpha-ent/REMOTE_ALL.
+     */
+    activeProfileKey: string;
+
+    profiles:
+        Map<
+            string,
+            StabilityProfile
+        >;
 
     baselineSingleRate: number | null;
 
@@ -300,6 +361,8 @@ interface EpochMetrics {
 
     wallRate: number;
 
+    trackedPids: number;
+
     p95Jitter: number;
     p95LateBy: number;
 
@@ -328,11 +391,20 @@ export async function main(
         ["min-lane-gain", 0.03],
         ["max-period-ratio", 10],
 
+        /*
+         * γ3.2 PRODUCTION LOCK
+         *
+         * Multi-lane live trials are deliberately opt-in until
+         * reservation-calendar scheduling can transition portfolios
+         * without disturbing the production floor.
+         */
+        ["experimental-multilane", false],
+
         ["reserve-pct", 0.05],
         ["remote-reserve-pct", 0.02],
 
         ["take-min", 0.05],
-        ["take-max", 0.25],
+        ["take-max", 0.40],
         ["take-step", 0.01],
 
         ["gaps", "250,200,175,150,125,100,80,60,50"],
@@ -346,6 +418,18 @@ export async function main(
         ["prep-sec", 0.05],
 
         ["window-batches", 40],
+
+        /*
+         * Empirical starting envelope from γ3.3:
+         *
+         * ~9.3k PIDs still operated normally.
+         * ~12.4k PIDs preceded scheduler starvation.
+         *
+         * Soft = stop exploring.
+         * Hard = proactively retreat.
+         */
+        ["pid-soft-limit", 8000],
+        ["pid-hard-limit", 9500],
 
         ["reeval-ms", 120000],
         ["env-ms", 5000],
@@ -409,6 +493,11 @@ export async function main(
                 ) || 10
             ),
 
+        experimentalMultiLane:
+            Boolean(
+                f["experimental-multilane"]
+            ),
+
         reservePct:
             clamp(
                 Number(
@@ -440,7 +529,7 @@ export async function main(
             clamp(
                 Number(
                     f["take-max"]
-                ) || 0.25,
+                ) || 0.40,
                 0.01,
                 0.80
             ),
@@ -514,6 +603,26 @@ export async function main(
                 )
             ),
 
+        pidSoftLimit:
+            Math.max(
+                500,
+                Math.floor(
+                    Number(
+                        f["pid-soft-limit"]
+                    ) || 8000
+                )
+            ),
+
+        pidHardLimit:
+            Math.max(
+                1000,
+                Math.floor(
+                    Number(
+                        f["pid-hard-limit"]
+                    ) || 9500
+                )
+            ),
+
         reevalMs:
             Math.max(
                 30000,
@@ -564,6 +673,15 @@ export async function main(
 
         fallbackSafety: 1.15,
     };
+
+    if (
+        cfg.pidHardLimit <=
+        cfg.pidSoftLimit
+    ) {
+        cfg.pidHardLimit =
+            cfg.pidSoftLimit +
+            1500;
+    }
 
     if (
         cfg.takeMin >
@@ -627,7 +745,13 @@ export async function main(
 
     const controls: Controls = {
         takeCap:
-            cfg.takeMax,
+            Math.max(
+                cfg.takeMin,
+                Math.min(
+                    0.25,
+                    cfg.takeMax
+                )
+            ),
 
         gapFloor:
             initialGapFloor(
@@ -643,6 +767,23 @@ export async function main(
         allowedTargets: 1,
 
         stableWindows: 0,
+
+        learnedTakeCeiling:
+            Math.min(
+                cfg.takeMax,
+                0.26
+            ),
+
+        takeProbeCooldown: 0,
+
+        activeProfileKey:
+            "",
+
+        profiles:
+            new Map<
+                string,
+                StabilityProfile
+            >(),
 
         baselineSingleRate:
             null,
@@ -667,6 +808,19 @@ export async function main(
         `preferred=${preferred || "AUTO"} | ` +
         `maxTargets=${cfg.maxTargets} | ` +
         `telemetryPort=${cfg.port}`
+    );
+
+    ns.tprint(
+        `γ3.2 PRODUCTION LOCK | ` +
+        `takeStart=${pct(controls.takeCap)} | ` +
+        `takeCeiling=${pct(cfg.takeMax)} | ` +
+        `multiLane=${
+            cfg.experimentalMultiLane
+                ? "EXPERIMENTAL"
+                : "LOCKED"
+        } | ` +
+        `pidSoft=${cfg.pidSoftLimit} | ` +
+        `pidHard=${cfg.pidHardLimit}`
     );
 
     while (true) {
@@ -902,6 +1056,13 @@ export async function main(
                 env.signature;
         }
 
+        activatePolicyProfile(
+            ns,
+            controls,
+            plan,
+            cfg
+        );
+
         deployWorkers(
             ns,
             env.remoteHosts
@@ -1029,6 +1190,39 @@ export async function main(
             ) {
                 reason =
                     verify.reason;
+
+                /*
+                 * γ3.3 fault snapshot.
+                 *
+                 * Close the statistical observation at the FIRST
+                 * failure. The subsequent physical drain is safety
+                 * cleanup, not part of the healthy measurement.
+                 */
+                const faultMetrics =
+                    summarizeEpoch(
+                        ns,
+                        rt,
+                        plan,
+                        reason
+                    );
+
+                printMetrics(
+                    ns,
+                    epoch,
+                    faultMetrics
+                );
+
+                adaptControls(
+                    ns,
+                    controls,
+                    faultMetrics,
+                    plan,
+                    cfg,
+                    env.signature
+                );
+
+                terminalMetricsHandled =
+                    true;
 
                 stopFuture(rt);
             }
@@ -3726,10 +3920,13 @@ function verifyDue(
             min;
 
         if (
-            moneyRatio <
-                cfg.prepMoney ||
-            secDelta >
-                cfg.prepSec
+            !rt.stopScheduling &&
+            (
+                moneyRatio <
+                    cfg.prepMoney ||
+                secDelta >
+                    cfg.prepSec
+            )
         ) {
             rt.driftCount++;
 
@@ -4000,6 +4197,221 @@ function garbageCollectRuntime(
 
 /*
  * ================================================================
+ * γ3.4 POLICY PROFILE MEMORY
+ * ================================================================
+ */
+
+function policyProfileKey(
+    plan: Portfolio
+): string {
+    const lane =
+        plan.lanes[0];
+
+    if (!lane) {
+        return "";
+    }
+
+    return (
+        lane.target +
+        "|" +
+        lane.topology
+    );
+}
+
+
+function saveActivePolicyProfile(
+    controls: Controls
+): void {
+    if (
+        !controls.activeProfileKey
+    ) {
+        return;
+    }
+
+    const profile =
+        controls.profiles.get(
+            controls.activeProfileKey
+        );
+
+    if (!profile) {
+        return;
+    }
+
+    profile.takeCap =
+        controls.takeCap;
+
+    profile.learnedTakeCeiling =
+        controls.learnedTakeCeiling;
+
+    profile.stableWindows =
+        controls.stableWindows;
+
+    profile.takeProbeCooldown =
+        controls.takeProbeCooldown;
+
+    profile.baselineSingleRate =
+        controls.baselineSingleRate;
+}
+
+
+function activatePolicyProfile(
+    ns: NS,
+    controls: Controls,
+    plan: Portfolio,
+    cfg: Config
+): void {
+    const key =
+        policyProfileKey(
+            plan
+        );
+
+    if (!key) {
+        return;
+    }
+
+    if (
+        key ===
+        controls.activeProfileKey
+    ) {
+        return;
+    }
+
+    /*
+     * Preserve the evidence of the workload we're leaving.
+     */
+    saveActivePolicyProfile(
+        controls
+    );
+
+    const lane =
+        plan.lanes[0];
+
+    if (!lane) {
+        return;
+    }
+
+    let profile =
+        controls.profiles.get(
+            key
+        );
+
+    if (!profile) {
+        const floorTake =
+            Math.max(
+                cfg.takeMin,
+                Math.min(
+                    0.25,
+                    cfg.takeMax
+                )
+            );
+
+        profile = {
+            key,
+
+            target:
+                lane.target,
+
+            topology:
+                lane.topology,
+
+            /*
+             * Every UNKNOWN workload starts from the known
+             * production floor.
+             *
+             * It does NOT inherit aggression learned elsewhere.
+             */
+            takeCap:
+                floorTake,
+
+            learnedTakeCeiling:
+                Math.min(
+                    cfg.takeMax,
+                    Math.max(
+                        floorTake,
+                        0.26
+                    )
+                ),
+
+            stableWindows: 0,
+
+            takeProbeCooldown: 0,
+
+            baselineSingleRate:
+                null,
+
+            failures: 0,
+        };
+
+        controls.profiles.set(
+            key,
+            profile
+        );
+
+        ns.tprint(
+            `[PROFILE] NEW | ${key} | ` +
+            `take=${pct(profile.takeCap)} | ` +
+            `ceiling=${pct(profile.learnedTakeCeiling)}`
+        );
+    } else {
+        ns.tprint(
+            `[PROFILE] RESTORE | ${key} | ` +
+            `take=${pct(profile.takeCap)} | ` +
+            `ceiling=${pct(profile.learnedTakeCeiling)} | ` +
+            `failures=${profile.failures}`
+        );
+    }
+
+    controls.activeProfileKey =
+        key;
+
+    controls.takeCap =
+        profile.takeCap;
+
+    controls.learnedTakeCeiling =
+        profile.learnedTakeCeiling;
+
+    controls.stableWindows =
+        profile.stableWindows;
+
+    controls.takeProbeCooldown =
+        profile.takeProbeCooldown;
+
+    controls.baselineSingleRate =
+        profile.baselineSingleRate;
+
+    /*
+     * Lane experiments are workload-specific evidence too.
+     * γ3.4 production mode starts each new policy clean.
+     */
+    controls.allowedTargets = 1;
+
+    controls.trialTwo = false;
+
+    controls.laneCooldown = 0;
+
+    controls.laneRejectedSignature =
+        null;
+}
+
+
+function recordPolicyFailure(
+    controls: Controls
+): void {
+    const profile =
+        controls.profiles.get(
+            controls.activeProfileKey
+        );
+
+    if (!profile) {
+        return;
+    }
+
+    profile.failures++;
+}
+
+
+/*
+ * ================================================================
  * DRAIN / ABORT
  * ================================================================
  */
@@ -4258,6 +4670,9 @@ function summarizeEpoch(
 
         wallRate,
 
+        trackedPids:
+            rt.pids.length,
+
         p95Jitter:
             percentile(
                 rt.jitters,
@@ -4317,6 +4732,14 @@ function adaptControls(
         metrics.driftCount >
         0;
 
+    const pidSoftBad =
+        metrics.trackedPids >=
+        cfg.pidSoftLimit;
+
+    const pidHardBad =
+        metrics.trackedPids >=
+        cfg.pidHardLimit;
+
     const launchBad =
         metrics.launchFailures >
         0 ||
@@ -4328,7 +4751,8 @@ function adaptControls(
         jitterBad ||
         lateBad ||
         driftBad ||
-        launchBad;
+        launchBad ||
+        pidHardBad;
 
     if (unstable) {
         controls.stableWindows = 0;
@@ -4345,7 +4769,8 @@ function adaptControls(
         if (
             jitterBad ||
             lateBad ||
-            launchBad
+            launchBad ||
+            pidHardBad
         ) {
             controls.gapFloor =
                 nextLargerGap(
@@ -4368,18 +4793,94 @@ function adaptControls(
                 );
         }
 
-        if (driftBad) {
-            controls.takeCap =
+        if (
+            driftBad ||
+            pidHardBad
+        ) {
+            const safeTake =
                 Math.max(
                     cfg.takeMin,
                     controls.takeCap -
                         cfg.takeStep
                 );
+
+            controls.takeCap =
+                safeTake;
+
+            /*
+             * Anything above the original 25% production floor is
+             * experimental overdrive. A real fault there becomes
+             * empirical evidence for a lower ceiling.
+             */
+            if (
+                controls.takeCap >=
+                    0.25 -
+                        1e-9
+            ) {
+                controls.learnedTakeCeiling =
+                    Math.min(
+                        controls.learnedTakeCeiling,
+                        safeTake
+                    );
+
+                controls.takeProbeCooldown =
+                    Math.max(
+                        controls.takeProbeCooldown,
+                        20
+                    );
+            } else {
+                controls.takeProbeCooldown =
+                    Math.max(
+                        controls.takeProbeCooldown,
+                        8
+                    );
+            }
         }
+
+        /*
+         * Extreme scheduler lateness is also pressure evidence,
+         * even if target-state drift has not appeared yet.
+         */
+        if (
+            lateBad &&
+            controls.takeCap >
+                0.25 +
+                    1e-9
+        ) {
+            const pressureSafe =
+                Math.max(
+                    0.25,
+                    controls.takeCap -
+                        cfg.takeStep
+                );
+
+            controls.takeCap =
+                pressureSafe;
+
+            controls.learnedTakeCeiling =
+                Math.min(
+                    controls.learnedTakeCeiling,
+                    pressureSafe
+                );
+
+            controls.takeProbeCooldown =
+                Math.max(
+                    controls.takeProbeCooldown,
+                    20
+                );
+        }
+
+        recordPolicyFailure(
+            controls
+        );
 
         ns.tprint(
             `[ADAPT] BACKOFF | ` +
             `takeCap=${pct(controls.takeCap)} | ` +
+            `learnedCeiling=${pct(controls.learnedTakeCeiling)} | ` +
+            `probeCooldown=${controls.takeProbeCooldown} | ` +
+            `pids=${metrics.trackedPids}/${cfg.pidSoftLimit}/${cfg.pidHardLimit} | ` +
+            `profile=${controls.activeProfileKey || "-"} | ` +
             `gapFloor=${controls.gapFloor}ms | ` +
             `lead=${cfg.launchLead}ms | ` +
             `safety=${cfg.safety.toFixed(3)} | ` +
@@ -4390,6 +4891,13 @@ function adaptControls(
     }
 
     controls.stableWindows++;
+
+    if (
+        controls.takeProbeCooldown >
+        0
+    ) {
+        controls.takeProbeCooldown--;
+    }
 
     /*
      * Measured throughput contains hack RNG noise.
@@ -4562,25 +5070,128 @@ function adaptControls(
     }
 
     /*
-     * Recover hack aggression if a previous drift event
-     * forced takeCap downward.
+     * ========================================================
+     * γ3.2 ADAPTIVE TAKE OVERDRIVE
+     *
+     * Raising takeCap only expands the optimizer's search
+     * space. It does NOT force the selected lane to use the
+     * ceiling.
+     *
+     * If the model still prefers 25%, actualTake stays ~25%.
+     *
+     * If a more aggressive batch is genuinely more profitable
+     * and still fits RAM/timing constraints, JIT5 may climb
+     * gradually toward the configured ceiling.
+     * ========================================================
      */
+    /*
+     * ========================================================
+     * γ3.4 PID PRESSURE HOLD
+     * ========================================================
+     */
+
+    if (pidSoftBad) {
+        ns.tprint(
+            `[ADAPT] PID-HOLD | ` +
+            `pids=${metrics.trackedPids} | ` +
+            `soft=${cfg.pidSoftLimit} | ` +
+            `hard=${cfg.pidHardLimit} | ` +
+            `take=${pct(controls.takeCap)} | ` +
+            `profile=${controls.activeProfileKey || "-"}`
+        );
+
+        return;
+    }
+
+    /*
+     * ========================================================
+     * γ3.3 EMPIRICAL TAKE PROBING
+     *
+     * There are now TWO ceilings:
+     *
+     * cfg.takeMax
+     *   absolute configured search bound
+     *
+     * learnedTakeCeiling
+     *   highest aggression currently trusted by runtime evidence
+     * ========================================================
+     */
+
+    if (
+        controls.takeProbeCooldown ===
+            0 &&
+        controls.takeCap >=
+            controls.learnedTakeCeiling -
+                1e-9 &&
+        controls.learnedTakeCeiling <
+            cfg.takeMax -
+                1e-9 &&
+        controls.stableWindows >=
+            20
+    ) {
+        controls.learnedTakeCeiling =
+            Math.min(
+                cfg.takeMax,
+                controls.learnedTakeCeiling +
+                    cfg.takeStep
+            );
+
+        /*
+         * Unlock only.
+         * Do not increase take in the same observation window.
+         */
+        ns.tprint(
+            `[ADAPT] TAKE-PROBE-UNLOCK | ` +
+            `newCeiling=${pct(controls.learnedTakeCeiling)}`
+        );
+
+        return;
+    }
+
+    const effectiveTakeCeiling =
+        Math.min(
+            cfg.takeMax,
+            controls.learnedTakeCeiling
+        );
+
     if (
         controls.takeCap <
-        cfg.takeMax
+            effectiveTakeCeiling -
+                1e-9 &&
+        controls.stableWindows >=
+            2 &&
+        controls.takeProbeCooldown ===
+            0
     ) {
         controls.takeCap =
             Math.min(
-                cfg.takeMax,
+                effectiveTakeCeiling,
                 controls.takeCap +
                     cfg.takeStep
             );
 
+        /*
+         * Once we reach the learned frontier, dwell there for
+         * twenty clean windows before even allowing a higher probe.
+         */
+        if (
+            controls.takeCap >=
+                effectiveTakeCeiling -
+                    1e-9 &&
+            effectiveTakeCeiling <
+                cfg.takeMax -
+                    1e-9
+        ) {
+            controls.takeProbeCooldown =
+                20;
+        }
+
         ns.tprint(
-            `[ADAPT] recover takeCap -> ` +
-            pct(
-                controls.takeCap
-            )
+            `[ADAPT] TAKE-EXPAND | ` +
+            `cap=${pct(controls.takeCap)} | ` +
+            `learnedCeiling=${pct(controls.learnedTakeCeiling)} | ` +
+            `hardCeiling=${pct(cfg.takeMax)} | ` +
+            `dwell=${controls.takeProbeCooldown}`
         );
 
         return;
@@ -4594,6 +5205,7 @@ function adaptControls(
      * economically useless under the same environment.
      */
     if (
+        cfg.experimentalMultiLane &&
         controls.allowedTargets === 1 &&
         cfg.maxTargets >= 2 &&
         controls.laneCooldown === 0 &&
@@ -4840,10 +5452,18 @@ function printPlan(
     ns.tprint(
         `controls | ` +
         `takeCap=${pct(controls.takeCap)} | ` +
+        `takeLearned=${pct(controls.learnedTakeCeiling)} | ` +
+        `probeCd=${controls.takeProbeCooldown} | ` +
+        `profile=${controls.activeProfileKey || "-"} | ` +
         `gapFloor=${controls.gapFloor}ms | ` +
         `lead=${cfg.launchLead}ms | ` +
         `safety=${cfg.safety.toFixed(3)} | ` +
-        `allowedTargets=${controls.allowedTargets}` +
+        `allowedTargets=${controls.allowedTargets} | ` +
+        `multi=${
+            cfg.experimentalMultiLane
+                ? "EXPERIMENTAL"
+                : "LOCKED"
+        }` +
         (
             controls.trialTwo
                 ? " | TRIAL-2"
@@ -4885,6 +5505,7 @@ function printMetrics(
         `actual=${fmtMoney(metrics.actualRate)}/s | ` +
         `wall=${fmtMoney(metrics.wallRate)}/s | ` +
         `realized=${pct(metrics.realizedRatio)} | ` +
+        `pids=${metrics.trackedPids} | ` +
         `p95-jitter=${metrics.p95Jitter.toFixed(1)}ms | ` +
         `p95-late=${metrics.p95LateBy.toFixed(1)}ms | ` +
         `drift=${metrics.driftCount} | ` +
@@ -4914,6 +5535,17 @@ function printHelp(
 
     ns.tprint(
         "run jit5.ts --limit 100 --tail"
+    );
+
+    ns.tprint(
+        "run jit5.ts --experimental-multilane --tail"
+    );
+
+    ns.tprint("");
+
+    ns.tprint(
+        "γ3.2 defaults to single-lane production lock; " +
+        "take ceiling is explored adaptively from a safe 25% start."
     );
 
     ns.tprint("");
