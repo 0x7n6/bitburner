@@ -163,8 +163,6 @@ interface LaneRuntime extends LanePlan {
 
     planned: number;
     nextBase: number;
-
-    quota: number;
 }
 
 interface Job {
@@ -202,6 +200,7 @@ interface BatchRuntime {
 
     started: boolean;
     verified: boolean;
+    verifiedWindow: number;
 
     actualStolen: number;
 
@@ -220,6 +219,11 @@ interface Runtime {
 
     startedAt: number;
     lastEnvCheck: number;
+
+    hackingMoneyAtStart: number;
+
+    measurementId: number;
+    lastGcAt: number;
 
     lanes: LaneRuntime[];
 
@@ -293,6 +297,8 @@ interface EpochMetrics {
     predictedRate: number;
     measuredRate: number;
     actualRate: number;
+
+    wallRate: number;
 
     p95Jitter: number;
     p95LateBy: number;
@@ -910,32 +916,28 @@ export async function main(
                       cfg.limit -
                           totalVerified
                   )
-                : cfg.windowBatches;
+                : Infinity;
 
         if (
-            cfg.limit > 0 &&
             remainingLimit <= 0
         ) {
             break;
         }
 
-        const epochLimit =
-            cfg.limit > 0
-                ? Math.min(
-                      cfg.windowBatches,
-                      remainingLimit
-                  )
-                : cfg.windowBatches;
+        const runtimeLimit =
+            remainingLimit;
 
         const rt =
             initRuntime(
                 plan,
                 epoch,
                 cfg,
-                epochLimit
+                ns.getMoneySources()
+                    .sinceStart
+                    .hacking
             );
 
-        const initialSignature =
+        let initialSignature =
             staticSignature(
                 ns
             );
@@ -951,6 +953,9 @@ export async function main(
 
         let reason = "";
 
+        let terminalMetricsHandled =
+            false;
+
         while (true) {
             const now =
                 Date.now();
@@ -961,11 +966,25 @@ export async function main(
                 rt
             );
 
+            if (
+                now -
+                    rt.lastGcAt >=
+                2000
+            ) {
+                rt.lastGcAt =
+                    now;
+
+                garbageCollectRuntime(
+                    ns,
+                    rt
+                );
+            }
+
             scheduleAhead(
                 rt,
                 now,
                 cfg,
-                epochLimit
+                runtimeLimit
             );
 
             const launch =
@@ -1016,17 +1035,6 @@ export async function main(
 
             if (
                 !reason &&
-                rt.verified >=
-                    epochLimit
-            ) {
-                reason =
-                    "WINDOW";
-
-                stopFuture(rt);
-            }
-
-            if (
-                !reason &&
                 cfg.limit > 0 &&
                 totalVerified >=
                     cfg.limit
@@ -1037,18 +1045,13 @@ export async function main(
                 stopFuture(rt);
             }
 
-            if (
-                !reason &&
-                now -
-                    rt.startedAt >=
-                    cfg.reevalMs
-            ) {
-                reason =
-                    "REEVAL";
-
-                stopFuture(rt);
-            }
-
+            /*
+             * Structural changes remain hard generation boundaries.
+             *
+             * Hacking-level growth itself was intentionally removed
+             * from staticSignature(), so gaining Hack skill no longer
+             * kills a healthy pipeline.
+             */
             if (
                 !reason &&
                 now -
@@ -1074,6 +1077,181 @@ export async function main(
                 }
             }
 
+            /*
+             * ====================================================
+             * γ3 MEASUREMENT WINDOW
+             *
+             * WINDOW IS NOT PIPELINE LIFETIME.
+             *
+             * Measure -> adapt -> hot-apply compatible policy ->
+             * reset telemetry only -> keep producing.
+             * ====================================================
+             */
+            if (
+                !reason &&
+                rt.verified >=
+                    cfg.windowBatches
+            ) {
+                const metrics =
+                    summarizeEpoch(
+                        ns,
+                        rt,
+                        plan,
+                        "WINDOW"
+                    );
+
+                printMetrics(
+                    ns,
+                    epoch,
+                    metrics
+                );
+
+                adaptControls(
+                    ns,
+                    controls,
+                    metrics,
+                    plan,
+                    cfg,
+                    env.signature
+                );
+
+                if (
+                    cfg.limit > 0 &&
+                    totalVerified >=
+                        cfg.limit
+                ) {
+                    reason =
+                        "LIMIT";
+
+                    stopFuture(rt);
+
+                    terminalMetricsHandled =
+                        true;
+                } else {
+                    /*
+                     * Preserve the cold-start capacity envelope.
+                     *
+                     * buildEnv() subtracts currently-running JIT workers
+                     * from free RAM, which would make a hot pipeline look
+                     * artificially resource-starved. We refresh the model
+                     * inputs (Hack/player) without forgetting total
+                     * scheduler capacity.
+                     */
+                    const nextEnv =
+                        refreshModelEnv(
+                            ns,
+                            env
+                        );
+
+                    let nextPlan =
+                        choosePortfolio(
+                            ns,
+                            nextEnv,
+                            cfg,
+                            controls,
+                            preferred,
+                            true
+                        );
+
+                    if (
+                        controls.trialTwo &&
+                        nextPlan.lanes.length <
+                            2
+                    ) {
+                        ns.tprint(
+                            "[ADAPT] lane #2 not economically admissible " +
+                            "under current RAM / target set; returning to single-lane optimization."
+                        );
+
+                        controls.allowedTargets = 1;
+                        controls.trialTwo = false;
+                        controls.laneCooldown = 3;
+                        controls.stableWindows = 0;
+
+                        controls.laneRejectedSignature =
+                            nextEnv.signature;
+
+                        nextPlan =
+                            choosePortfolio(
+                                ns,
+                                nextEnv,
+                                cfg,
+                                controls,
+                                preferred,
+                                true
+                            );
+                    }
+
+                    if (
+                        nextPlan.lanes.length ===
+                        0
+                    ) {
+                        reason =
+                            "POLICY no READY lane";
+
+                        stopFuture(rt);
+
+                        terminalMetricsHandled =
+                            true;
+                    } else if (
+                        canHotSwapPlan(
+                            rt,
+                            nextPlan
+                        )
+                    ) {
+                        env =
+                            nextEnv;
+
+                        plan =
+                            nextPlan;
+
+                        deployWorkers(
+                            ns,
+                            env.remoteHosts
+                        );
+
+                        epoch++;
+
+                        applyHotPlan(
+                            rt,
+                            plan,
+                            epoch
+                        );
+
+                        resetMeasurementWindow(
+                            ns,
+                            rt
+                        );
+
+                        initialSignature =
+                            staticSignature(
+                                ns
+                            );
+
+                        printPlan(
+                            ns,
+                            plan,
+                            controls,
+                            cfg,
+                            false,
+                            epoch
+                        );
+                    } else {
+                        /*
+                         * γ3 stage 1 deliberately refuses to blindly mix
+                         * incompatible target/topology generations.
+                         */
+                        reason =
+                            "POLICY";
+
+                        stopFuture(rt);
+
+                        terminalMetricsHandled =
+                            true;
+                    }
+                }
+            }
+
             if (
                 rt.stopScheduling &&
                 allDrained(
@@ -1081,11 +1259,6 @@ export async function main(
                     rt
                 )
             ) {
-                /*
-                 * Leave a small clean
-                 * verification window
-                 * after final W2.
-                 */
                 await ns.sleep(80);
 
                 drainTelemetry(
@@ -1119,27 +1292,38 @@ export async function main(
             await ns.sleep(20);
         }
 
-        const metrics =
-            summarizeEpoch(
-                rt,
-                plan,
-                reason
+        /*
+         * WINDOW metrics have already been printed before a
+         * deliberate incompatible-policy drain.
+         *
+         * Real faults still get their partial-window telemetry.
+         */
+        if (
+            !terminalMetricsHandled
+        ) {
+            const metrics =
+                summarizeEpoch(
+                    ns,
+                    rt,
+                    plan,
+                    reason
+                );
+
+            printMetrics(
+                ns,
+                epoch,
+                metrics
             );
 
-        printMetrics(
-            ns,
-            epoch,
-            metrics
-        );
-
-        adaptControls(
-            ns,
-            controls,
-            metrics,
-            plan,
-            cfg,
-            env.signature
-        );
+            adaptControls(
+                ns,
+                controls,
+                metrics,
+                plan,
+                cfg,
+                env.signature
+            );
+        }
 
         if (
             cfg.limit > 0 &&
@@ -1151,6 +1335,7 @@ export async function main(
 
         await ns.sleep(200);
     }
+
 
     ns.tprint(
         `JIT5 DONE | verified=${totalVerified}`
@@ -1406,11 +1591,6 @@ function staticSignature(
         getOpeners(ns).length,
 
         rooted,
-
-        Math.floor(
-            ns.getHackingLevel() /
-            10
-        ),
 
         Math.round(ram),
     ].join(":");
@@ -2665,16 +2845,10 @@ function initRuntime(
     plan: Portfolio,
     epoch: number,
     cfg: Config,
-    epochLimit: number
+    hackingMoneyAtStart: number
 ): Runtime {
     const now =
         Date.now();
-
-    const quota =
-        Math.ceil(
-            epochLimit /
-            plan.lanes.length
-        );
 
     const lanes:
         LaneRuntime[] =
@@ -2688,8 +2862,6 @@ function initRuntime(
                 id,
 
                 planned: 0,
-
-                quota,
 
                 nextBase:
                     now +
@@ -2709,6 +2881,11 @@ function initRuntime(
 
         lastEnvCheck:
             now,
+
+        hackingMoneyAtStart,
+
+        measurementId: 1,
+        lastGcAt: now,
 
         lanes,
 
@@ -2745,7 +2922,7 @@ function scheduleAhead(
     rt: Runtime,
     now: number,
     cfg: Config,
-    epochLimit: number
+    runtimeLimit: number
 ): void {
     if (
         rt.stopScheduling
@@ -2753,26 +2930,84 @@ function scheduleAhead(
         return;
     }
 
+    /*
+     * Do not materialize the whole long weaken horizon.
+     *
+     * Only keep a few seconds of not-yet-launched work queued.
+     * Workers already running provide the deep pipeline.
+     */
+    const launchHorizon =
+        3000;
+
+    const staleTolerance =
+        Math.max(
+            60,
+            cfg.guard *
+                0.50
+        );
+
+    let added = false;
+
     for (
         const lane
         of rt.lanes
     ) {
-        const horizon =
-            Math.max(
-                lane.wTime +
-                    30000,
-                60000
-            );
+        let scheduledThisPass = 0;
 
         while (
-            lane.planned <
-                lane.quota &&
             rt.totalPlanned <
-                epochLimit &&
-            lane.nextBase <=
-                now +
-                    horizon
+                runtimeLimit &&
+            scheduledThisPass <
+                128
         ) {
+            const earliest =
+                earliestLaunchAt(
+                    lane,
+                    lane.nextBase,
+                    cfg
+                );
+
+            /*
+             * Runtime stall / app suspension:
+             * never launch stale timing slots.
+             * Advance the cadence instead.
+             */
+            if (
+                earliest <
+                now -
+                    staleTolerance
+            ) {
+                const behind =
+                    now -
+                    earliest;
+
+                const skips =
+                    Math.max(
+                        1,
+                        Math.floor(
+                            behind /
+                            Math.max(
+                                1,
+                                lane.period
+                            )
+                        )
+                    );
+
+                lane.nextBase +=
+                    skips *
+                    lane.period;
+
+                continue;
+            }
+
+            if (
+                earliest >
+                now +
+                    launchHorizon
+            ) {
+                break;
+            }
+
             addBatch(
                 rt,
                 lane,
@@ -2782,8 +3017,53 @@ function scheduleAhead(
 
             lane.nextBase +=
                 lane.period;
+
+            scheduledThisPass++;
+            added = true;
         }
     }
+
+    /*
+     * launchDue() runs every ~20 ms.
+     * Sort only when new work was appended, not every loop.
+     */
+    if (added) {
+        rt.jobs.sort(
+            (a, b) =>
+                a.launchAt -
+                b.launchAt
+        );
+    }
+}
+
+
+function earliestLaunchAt(
+    lane: LaneRuntime,
+    base: number,
+    cfg: Config
+): number {
+    return Math.min(
+        base -
+            lane.hTime -
+            cfg.launchLead,
+
+        base +
+            lane.gap -
+            lane.wTime -
+            cfg.launchLead,
+
+        base +
+            2 *
+                lane.gap -
+            lane.gTime -
+            cfg.launchLead,
+
+        base +
+            3 *
+                lane.gap -
+            lane.wTime -
+            cfg.launchLead
+    );
 }
 
 
@@ -2921,6 +3201,9 @@ function addBatch(
             verified:
                 false,
 
+            verifiedWindow:
+                -1,
+
             actualStolen: 0,
 
             hackFinishedAt: 0,
@@ -2942,12 +3225,6 @@ function launchDue(
     cfg: Config,
     now: number
 ): LaunchResult {
-    rt.jobs.sort(
-        (a, b) =>
-            a.launchAt -
-            b.launchAt
-    );
-
     for (
         const job
         of rt.jobs
@@ -3064,6 +3341,16 @@ function launchDue(
             });
         }
     }
+
+    /*
+     * BatchRuntime keeps its own Job references.
+     * The global queue only needs jobs that have not launched yet.
+     */
+    rt.jobs =
+        rt.jobs.filter(
+            job =>
+                !job.launched
+        );
 
     return {
         ok: true,
@@ -3367,6 +3654,9 @@ function verifyDue(
         batch.verified =
             true;
 
+        batch.verifiedWindow =
+            rt.measurementId;
+
         rt.verified++;
 
         newVerified++;
@@ -3458,6 +3748,253 @@ function verifyDue(
         newVerified,
         reason: "",
     };
+}
+
+
+function refreshModelEnv(
+    ns: NS,
+    base: Env
+): Env {
+    const hack =
+        ns.getHackingLevel();
+
+    const signatureParts =
+        base.signature.split(
+            ":"
+        );
+
+    /*
+     * buildEnv() keeps hack-bucket at index 5.
+     * Preserve its signature format for adaptation hysteresis.
+     */
+    if (
+        signatureParts.length >=
+        7
+    ) {
+        signatureParts[5] =
+            String(
+                Math.floor(
+                    hack /
+                    10
+                )
+            );
+    }
+
+    return {
+        ...base,
+
+        hack,
+
+        player:
+            ns.getPlayer(),
+
+        signature:
+            signatureParts.join(
+                ":"
+            ),
+    };
+}
+
+
+function canHotSwapPlan(
+    rt: Runtime,
+    next: Portfolio
+): boolean {
+    if (
+        next.lanes.length !==
+        rt.lanes.length
+    ) {
+        return false;
+    }
+
+    /*
+     * Same target + same topology:
+     * future batches may safely receive new thread counts,
+     * timings, gap and period.
+     *
+     * Already-created batches remain immutable.
+     */
+    return next.lanes.every(
+        (
+            lane,
+            index
+        ) => {
+            const current =
+                rt.lanes[
+                    index
+                ];
+
+            return (
+                current !==
+                    undefined &&
+                current.target ===
+                    lane.target &&
+                current.topology ===
+                    lane.topology
+            );
+        }
+    );
+}
+
+
+function applyHotPlan(
+    rt: Runtime,
+    next: Portfolio,
+    epoch: number
+): void {
+    rt.epoch =
+        epoch;
+
+    /*
+     * Preserve scheduler cursor.
+     *
+     * New policy applies only to batches created after this point.
+     * Existing BatchRuntime objects keep their old immutable jobs.
+     */
+    rt.lanes =
+        next.lanes.map(
+            (
+                lane,
+                index
+            ) => {
+                const current =
+                    rt.lanes[
+                        index
+                    ];
+
+                return {
+                    ...lane,
+
+                    id:
+                        current.id,
+
+                    planned:
+                        current.planned,
+
+                    nextBase:
+                        current.nextBase,
+                };
+            }
+        );
+}
+
+
+function resetMeasurementWindow(
+    ns: NS,
+    rt: Runtime
+): void {
+    const now =
+        Date.now();
+
+    rt.measurementId++;
+
+    rt.startedAt =
+        now;
+
+    rt.lastEnvCheck =
+        now;
+
+    rt.hackingMoneyAtStart =
+        ns.getMoneySources()
+            .sinceStart
+            .hacking;
+
+    rt.verified = 0;
+
+    rt.expectedStolen = 0;
+    rt.actualStolen = 0;
+
+    rt.firstHackAt = 0;
+    rt.lastHackAt = 0;
+
+    rt.jitters = [];
+    rt.lateBy = [];
+
+    rt.driftCount = 0;
+    rt.launchFailures = 0;
+}
+
+
+function garbageCollectRuntime(
+    ns: NS,
+    rt: Runtime
+): void {
+    /*
+     * Do not ns.isRunning() every PID every 20 ms.
+     *
+     * Only verified batches are candidates for retirement.
+     */
+    rt.pids =
+        rt.pids.filter(
+            ref => {
+                const batch =
+                    rt.batches.get(
+                        ref.batchId
+                    );
+
+                if (!batch) {
+                    return false;
+                }
+
+                if (!batch.verified) {
+                    return true;
+                }
+
+                return ns.isRunning(
+                    ref.pid
+                );
+            }
+        );
+
+    const liveBatchIds =
+        new Set(
+            rt.pids.map(
+                ref =>
+                    ref.batchId
+            )
+        );
+
+    /*
+     * Keep current-window verified batches for statistics.
+     * Previous measurement generations can disappear once
+     * their worker PIDs are truly gone.
+     */
+    for (
+        const [
+            key,
+            batch,
+        ]
+        of rt.batches
+    ) {
+        if (
+            batch.verified &&
+            batch.verifiedWindow <
+                rt.measurementId &&
+            !liveBatchIds.has(
+                key
+            )
+        ) {
+            rt.batches.delete(
+                key
+            );
+        }
+    }
+
+    rt.jobs =
+        rt.jobs.filter(
+            job => {
+                const batch =
+                    rt.batches.get(
+                        job.key
+                    );
+
+                return Boolean(
+                    batch &&
+                    !job.launched &&
+                    !batch.verified
+                );
+            }
+        );
 }
 
 
@@ -3582,6 +4119,7 @@ function allDrained(
  */
 
 function summarizeEpoch(
+    ns: NS,
     rt: Runtime,
     plan: Portfolio,
     reason: string
@@ -3595,41 +4133,81 @@ function summarizeEpoch(
     const predictedRate =
         plan.totalEV;
 
-    const averagePeriod =
-        plan.lanes.reduce(
-            (
-                sum,
-                lane
-            ) =>
-                sum +
-                lane.period,
-            0
-        ) /
-        Math.max(
-            1,
-            plan.lanes.length
-        );
-
     let measuredRate = 0;
 
-    if (
-        rt.firstHackAt > 0 &&
-        rt.lastHackAt >=
-            rt.firstHackAt &&
-        rt.actualStolen > 0
+    /*
+    * Measure hot throughput per lane independently.
+    *
+    * Different targets can have very different H/G/W durations.
+    * A single global firstHackAt -> lastHackAt window therefore
+    * massively understates throughput for a multi-lane portfolio.
+    *
+    * Each lane gets its own temporal window; portfolio throughput
+    * is the sum of those independently measured lane rates.
+    */
+    for (
+        const lane
+        of rt.lanes
     ) {
-        const duration =
-            Math.max(
-                1,
-                rt.lastHackAt -
-                    rt.firstHackAt +
-                    averagePeriod
-            );
+        let laneActual = 0;
 
-        measuredRate =
-            rt.actualStolen *
-            1000 /
-            duration;
+        let firstHackAt = 0;
+        let lastHackAt = 0;
+
+        for (
+            const batch
+            of rt.batches.values()
+        ) {
+            if (
+                !batch.verified ||
+                batch.verifiedWindow !==
+                    rt.measurementId ||
+                batch.laneId !==
+                    lane.id ||
+                batch.hackFinishedAt <=
+                    0
+            ) {
+                continue;
+            }
+
+            laneActual +=
+                batch.actualStolen;
+
+            if (
+                firstHackAt === 0 ||
+                batch.hackFinishedAt <
+                    firstHackAt
+            ) {
+                firstHackAt =
+                    batch.hackFinishedAt;
+            }
+
+            lastHackAt =
+                Math.max(
+                    lastHackAt,
+                    batch.hackFinishedAt
+                );
+        }
+
+        if (
+            laneActual > 0 &&
+            firstHackAt > 0 &&
+            lastHackAt >=
+                firstHackAt
+        ) {
+            const duration =
+                Math.max(
+                    1,
+                    lastHackAt -
+                        firstHackAt +
+                        lane.period
+                );
+
+            measuredRate +=
+                laneActual *
+                1000 /
+                duration;
+        }
     }
 
     const adjustedRate =
@@ -3640,6 +4218,27 @@ function summarizeEpoch(
         measuredRate > 0
             ? measuredRate
             : adjustedRate;
+
+    const wallElapsed =
+    Math.max(
+        1,
+        Date.now() -
+            rt.startedAt
+    );
+
+    const wallHacking =
+        Math.max(
+            0,
+            ns.getMoneySources()
+                .sinceStart
+                .hacking -
+                rt.hackingMoneyAtStart
+        );
+
+    const wallRate =
+        wallHacking *
+        1000 /
+        wallElapsed;
 
     return {
         verified:
@@ -3656,6 +4255,8 @@ function summarizeEpoch(
         predictedRate,
         measuredRate,
         actualRate,
+
+        wallRate,
 
         p95Jitter:
             percentile(
@@ -4282,6 +4883,7 @@ function printMetrics(
         `verified=${metrics.verified} | ` +
         `pred=${fmtMoney(metrics.predictedRate)}/s | ` +
         `actual=${fmtMoney(metrics.actualRate)}/s | ` +
+        `wall=${fmtMoney(metrics.wallRate)}/s | ` +
         `realized=${pct(metrics.realizedRatio)} | ` +
         `p95-jitter=${metrics.p95Jitter.toFixed(1)}ms | ` +
         `p95-late=${metrics.p95LateBy.toFixed(1)}ms | ` +
