@@ -111,14 +111,50 @@ export async function main(
          * If JIT5 HOME_GW or a prep job is using home,
          * share evacuates completely.
          */
-        const productionNeedsHome =
+        /*
+         * Find a process that genuinely needs HOME RAM.
+         *
+         * Important:
+         * harvest.ts --no-home is only a coordinator running
+         * on home. Its actual H/G/W workers are deliberately
+         * allocated away from home, so it must NOT evict share.
+         */
+        const productionBlocker =
             ns.ps("home")
-                .some(
-                    proc =>
-                        HOME_CONSUMERS.has(
-                            proc.filename
-                        )
+                .find(
+                    proc => {
+                        if (
+                            !HOME_CONSUMERS.has(
+                                proc.filename
+                            )
+                        ) {
+                            return false;
+                        }
+
+                        if (
+                            proc.filename !==
+                            "harvest.ts"
+                        ) {
+                            return true;
+                        }
+
+                        const noHome =
+                            proc.args
+                                .map(
+                                    arg =>
+                                        String(arg)
+                                )
+                                .includes(
+                                    "--no-home"
+                                );
+
+                        return !noHome;
+                    }
                 );
+
+        const productionNeedsHome =
+            productionBlocker !==
+            undefined;
 
         if (
             productionNeedsHome
@@ -129,7 +165,9 @@ export async function main(
                 );
 
                 ns.tprint(
-                    "[SHARE] YIELD | production/prep needs home"
+                    `[SHARE] YIELD | ` +
+                    `${productionBlocker?.filename ?? "production"} ` +
+                    `needs home`
                 );
             }
 
