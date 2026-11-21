@@ -6,6 +6,66 @@ const W = "j5w.ts";
 
 const WORKERS = [H, G, W];
 
+/*
+ * ================================================================
+ * γ3.6 EMPIRICAL ECONOMIC FRONTIER
+ *
+ * Stability answers:
+ *   "Can this policy run?"
+ *
+ * Economic learning answers:
+ *   "Should this policy run?"
+ *
+ * A challenger must prove a real wall-clock advantage before
+ * replacing the current champion.
+ * ================================================================
+ */
+
+const ECON_MIN_SAMPLES =
+    5;
+
+const ECON_MAX_CHALLENGER_SAMPLES =
+    12;
+
+const ECON_EWMA_ALPHA =
+    0.35;
+
+const ECON_PROMOTE_GAIN =
+    0.02;
+
+const ECON_REJECT_LOSS =
+    0.03;
+
+const ECON_RETEST_WINDOWS =
+    30;
+
+/*
+ * γ3.6.1
+ *
+ * Cold pipeline windows can have excellent hot throughput but
+ * terrible wall throughput simply because the pipeline is still
+ * filling. They are operationally real, but they must not teach
+ * the steady-state policy frontier.
+ */
+const ECON_MIN_WALL_HOT_RATIO =
+    0.50;
+
+/*
+ * Cadence is now a first-class policy dimension.
+ *
+ * 270ms was repeatedly able to run with healthy PID/jitter while
+ * still allowing target collapse. Pure target drift therefore
+ * challenges cadence before sacrificing take.
+ */
+const ECON_PERIOD_STEP =
+    50;
+
+const ECON_PERIOD_MAX =
+    520;
+
+const ECON_PERIOD_CHALLENGE_SAMPLES =
+    12;
+
 type Phase =
     | "H"
     | "W1"
@@ -94,6 +154,41 @@ interface Config {
     fallbackSafety: number;
 }
 
+interface EconomicPolicyStats {
+    key: string;
+
+    target: string;
+    topology: Topology;
+
+    requestedTake: number;
+    actualTake: number;
+
+    gap: number;
+    period: number;
+
+    samples: number;
+
+    wallEwma: number;
+    actualEwma: number;
+
+    /*
+     * Exponentially weighted variance of wall-rate samples.
+     *
+     * This is deliberately used as a noise estimate rather
+     * than pretending one short window is exact.
+     */
+    wallVarianceEwma: number;
+
+    pidActualEwma: number;
+    pidEstimate: number;
+    pidRatioEwma: number;
+
+    predictionErrorEwma: number;
+
+    failures: number;
+}
+
+
 interface StabilityProfile {
     key: string;
 
@@ -103,11 +198,32 @@ interface StabilityProfile {
     takeCap: number;
     learnedTakeCeiling: number;
 
+    periodFloor: number;
+
     stableWindows: number;
     takeProbeCooldown: number;
 
     baselineSingleRate:
         number | null;
+
+    /*
+     * Economic observations are isolated not only by
+     * target/topology, but also by environment generation.
+     *
+     * A 25% policy measured at Hack 580 should not be blindly
+     * compared with one measured after a material environment
+     * change.
+     */
+    economicEnvironment: string;
+
+    economicPolicies:
+        Map<
+            string,
+            EconomicPolicyStats
+        >;
+
+    economicChampionKey:
+        string | null;
 
     failures: number;
 }
@@ -116,6 +232,13 @@ interface StabilityProfile {
 interface Controls {
     takeCap: number;
     gapFloor: number;
+
+    /*
+     * Minimum allowed inter-batch cadence.
+     *
+     * 0 means the ordinary planner minimum.
+     */
+    periodFloor: number;
 
     allowedTargets: number;
 
@@ -197,6 +320,13 @@ interface BatchModel {
     chance: number;
     hackPct: number;
 
+    /*
+     * requestedTake is the control-plane policy.
+     *
+     * actualTake is the quantized result after converting
+     * that request into an integer number of hack threads.
+     */
+    requestedTake: number;
     actualTake: number;
 
     moneyMax: number;
@@ -893,6 +1023,8 @@ export async function main(
                 cfg.gaps
             ),
 
+        periodFloor: 0,
+
         /*
          * JIT5 starts with one lane.
          *
@@ -946,7 +1078,7 @@ export async function main(
     );
 
     ns.tprint(
-        `γ3.5 PREDICTIVE CONCURRENCY | ` +
+        `γ3.6.1 CADENCE-AWARE ECONOMIC FRONTIER | ` +
         `takeStart=${pct(controls.takeCap)} | ` +
         `takeCeiling=${pct(cfg.takeMax)} | ` +
         `multiLane=${
@@ -2206,6 +2338,9 @@ function modelBatch(
         chance,
         hackPct,
 
+        requestedTake:
+            wantedTake,
+
         actualTake,
 
         moneyMax,
@@ -2750,11 +2885,26 @@ function optimizeTarget(
                         cfg
                     );
 
+                /*
+                 * PID fit defines the runtime-safe minimum.
+                 *
+                 * γ3.6.1 may deliberately widen cadence beyond
+                 * that minimum when empirical target-state
+                 * stability says the theoretical cadence is too
+                 * aggressive.
+                 */
                 period =
-                    pidFit.period;
+                    Math.max(
+                        pidFit.period,
+                        controls.periodFloor
+                    );
 
                 const estimatedPids =
-                    pidFit.estimatedPids;
+                    estimateConcurrentPids(
+                        batch,
+                        period,
+                        cfg
+                    );
 
                 if (
                     estimatedPids >
@@ -4617,6 +4767,9 @@ function saveActivePolicyProfile(
     profile.learnedTakeCeiling =
         controls.learnedTakeCeiling;
 
+    profile.periodFloor =
+        controls.periodFloor;
+
     profile.stableWindows =
         controls.stableWindows;
 
@@ -4706,11 +4859,25 @@ function activatePolicyProfile(
                     )
                 ),
 
+            periodFloor: 0,
+
             stableWindows: 0,
 
             takeProbeCooldown: 0,
 
             baselineSingleRate:
+                null,
+
+            economicEnvironment:
+                "",
+
+            economicPolicies:
+                new Map<
+                    string,
+                    EconomicPolicyStats
+                >(),
+
+            economicChampionKey:
                 null,
 
             failures: 0,
@@ -4743,6 +4910,9 @@ function activatePolicyProfile(
 
     controls.learnedTakeCeiling =
         profile.learnedTakeCeiling;
+
+    controls.periodFloor =
+        profile.periodFloor;
 
     controls.stableWindows =
         profile.stableWindows;
@@ -5078,6 +5248,751 @@ function summarizeEpoch(
 }
 
 
+/*
+ * ================================================================
+ * γ3.6 EMPIRICAL ECONOMIC FRONTIER
+ * ================================================================
+ */
+
+function economicPolicyKey(
+    lane: LanePlan
+): string {
+    return (
+        lane.target +
+        "|" +
+        lane.topology +
+        "|take=" +
+        lane.requestedTake.toFixed(4) +
+        "|gap=" +
+        lane.gap +
+        "|period=" +
+        lane.period
+    );
+}
+
+
+function createEconomicPolicyStats(
+    lane: LanePlan
+): EconomicPolicyStats {
+    return {
+        key:
+            economicPolicyKey(
+                lane
+            ),
+
+        target:
+            lane.target,
+
+        topology:
+            lane.topology,
+
+        requestedTake:
+            lane.requestedTake,
+
+        actualTake:
+            lane.actualTake,
+
+        gap:
+            lane.gap,
+
+        period:
+            lane.period,
+
+        samples: 0,
+
+        wallEwma: 0,
+        actualEwma: 0,
+
+        wallVarianceEwma: 0,
+
+        pidActualEwma: 0,
+
+        pidEstimate:
+            lane.estimatedPids,
+
+        pidRatioEwma: 0,
+
+        predictionErrorEwma: 0,
+
+        failures: 0,
+    };
+}
+
+
+function economicScore(
+    stats: EconomicPolicyStats
+): number {
+    if (
+        stats.samples <=
+        0
+    ) {
+        return 0;
+    }
+
+    /*
+     * Conservative throughput score.
+     *
+     * wallEWMA is the center.
+     * One estimated standard-error is subtracted as a
+     * noise penalty.
+     *
+     * This is not presented as a formal confidence interval.
+     * It is a robust ranking heuristic for noisy short windows.
+     */
+    const sigma =
+        Math.sqrt(
+            Math.max(
+                0,
+                stats.wallVarianceEwma
+            )
+        );
+
+    const uncertainty =
+        sigma /
+        Math.sqrt(
+            Math.max(
+                1,
+                stats.samples
+            )
+        );
+
+    return Math.max(
+        0,
+        stats.wallEwma -
+            uncertainty
+    );
+}
+
+
+function resetEconomicEnvironment(
+    profile: StabilityProfile,
+    environmentSignature: string
+): boolean {
+    if (
+        profile.economicEnvironment ===
+        environmentSignature
+    ) {
+        return false;
+    }
+
+    profile.economicEnvironment =
+        environmentSignature;
+
+    profile.economicPolicies.clear();
+
+    profile.economicChampionKey =
+        null;
+
+    return true;
+}
+
+
+function recordEconomicPolicyFailure(
+    controls: Controls,
+    plan: Portfolio,
+    environmentSignature: string
+): void {
+    if (
+        plan.lanes.length !==
+        1
+    ) {
+        return;
+    }
+
+    const profile =
+        controls.profiles.get(
+            controls.activeProfileKey
+        );
+
+    if (!profile) {
+        return;
+    }
+
+    resetEconomicEnvironment(
+        profile,
+        environmentSignature
+    );
+
+    const lane =
+        plan.lanes[0];
+
+    if (!lane) {
+        return;
+    }
+
+    const key =
+        economicPolicyKey(
+            lane
+        );
+
+    let stats =
+        profile.economicPolicies.get(
+            key
+        );
+
+    if (!stats) {
+        stats =
+            createEconomicPolicyStats(
+                lane
+            );
+
+        profile.economicPolicies.set(
+            key,
+            stats
+        );
+    }
+
+    stats.failures++;
+
+    /*
+     * A policy that produced a genuine runtime fault can no
+     * longer be treated as the current economic champion.
+     *
+     * Stability evidence always dominates economic evidence.
+     */
+    if (
+        profile.economicChampionKey ===
+        key
+    ) {
+        profile.economicChampionKey =
+            null;
+    }
+}
+
+
+function observeEconomicFrontier(
+    ns: NS,
+    controls: Controls,
+    metrics: EpochMetrics,
+    plan: Portfolio,
+    cfg: Config,
+    environmentSignature: string
+): boolean {
+    /*
+     * Return true when γ3.6 wants the controller to DWELL
+     * instead of changing another control during this window.
+     */
+
+    if (
+        plan.lanes.length !==
+            1 ||
+        metrics.reason !==
+            "WINDOW" ||
+        metrics.wallRate <=
+            0
+    ) {
+        return false;
+    }
+
+    /*
+     * γ3.6.1 WARM-WINDOW FILTER
+     *
+     * After prep / pipeline resurrection, measured hot throughput
+     * may already be healthy while wall-clock throughput still
+     * contains several seconds of pipeline fill.
+     *
+     * Example observed in production:
+     *
+     * actual ~= $5b/s
+     * wall   ~= $100m/s
+     *
+     * That is lifecycle evidence, not steady-state policy
+     * evidence. Hold all adaptation for this window and do not
+     * feed it into the economic EWMA.
+     */
+    const hotWallRatio =
+        metrics.actualRate > 0
+            ? metrics.wallRate /
+                metrics.actualRate
+            : 1;
+
+    if (
+        metrics.actualRate >
+            0 &&
+        hotWallRatio <
+            ECON_MIN_WALL_HOT_RATIO
+    ) {
+        ns.tprint(
+            `[ECON] WARM-SKIP | ` +
+            `wall=${fmtMoney(metrics.wallRate)}/s | ` +
+            `hot=${fmtMoney(metrics.actualRate)}/s | ` +
+            `ratio=${pct(hotWallRatio)}`
+        );
+
+        return true;
+    }
+
+    const profile =
+        controls.profiles.get(
+            controls.activeProfileKey
+        );
+
+    if (!profile) {
+        return false;
+    }
+
+    const environmentReset =
+        resetEconomicEnvironment(
+            profile,
+            environmentSignature
+        );
+
+    if (environmentReset) {
+        ns.tprint(
+            `[ECON] ENV-RESET | ` +
+            `${controls.activeProfileKey || "-"} | ` +
+            `${environmentSignature}`
+        );
+    }
+
+    const lane =
+        plan.lanes[0];
+
+    if (!lane) {
+        return false;
+    }
+
+    const key =
+        economicPolicyKey(
+            lane
+        );
+
+    let stats =
+        profile.economicPolicies.get(
+            key
+        );
+
+    if (!stats) {
+        stats =
+            createEconomicPolicyStats(
+                lane
+            );
+
+        profile.economicPolicies.set(
+            key,
+            stats
+        );
+    }
+
+    const alpha =
+        ECON_EWMA_ALPHA;
+
+    const pidRatio =
+        metrics.trackedPids /
+        Math.max(
+            1,
+            lane.estimatedPids
+        );
+
+    const predictionError =
+        Math.abs(
+            metrics.predictedRate -
+            metrics.wallRate
+        ) /
+        Math.max(
+            1,
+            metrics.predictedRate
+        );
+
+    if (
+        stats.samples ===
+        0
+    ) {
+        stats.wallEwma =
+            metrics.wallRate;
+
+        stats.actualEwma =
+            metrics.actualRate;
+
+        stats.wallVarianceEwma =
+            0;
+
+        stats.pidActualEwma =
+            metrics.trackedPids;
+
+        stats.pidRatioEwma =
+            pidRatio;
+
+        stats.predictionErrorEwma =
+            predictionError;
+    } else {
+        const oldWall =
+            stats.wallEwma;
+
+        const wallDelta =
+            metrics.wallRate -
+            oldWall;
+
+        stats.wallEwma =
+            oldWall +
+            alpha *
+                wallDelta;
+
+        /*
+         * Exponentially weighted variance update.
+         */
+        stats.wallVarianceEwma =
+            (
+                1 -
+                alpha
+            ) *
+            (
+                stats.wallVarianceEwma +
+                alpha *
+                    wallDelta *
+                    wallDelta
+            );
+
+        stats.actualEwma =
+            stats.actualEwma *
+                (
+                    1 -
+                    alpha
+                ) +
+            metrics.actualRate *
+                alpha;
+
+        stats.pidActualEwma =
+            stats.pidActualEwma *
+                (
+                    1 -
+                    alpha
+                ) +
+            metrics.trackedPids *
+                alpha;
+
+        stats.pidRatioEwma =
+            stats.pidRatioEwma *
+                (
+                    1 -
+                    alpha
+                ) +
+            pidRatio *
+                alpha;
+
+        stats.predictionErrorEwma =
+            stats.predictionErrorEwma *
+                (
+                    1 -
+                    alpha
+                ) +
+            predictionError *
+                alpha;
+    }
+
+    stats.samples++;
+
+    stats.pidEstimate =
+        lane.estimatedPids;
+
+    const sigma =
+        Math.sqrt(
+            Math.max(
+                0,
+                stats.wallVarianceEwma
+            )
+        );
+
+    const noise =
+        sigma /
+        Math.max(
+            1,
+            stats.wallEwma
+        );
+
+    const score =
+        economicScore(
+            stats
+        );
+
+    /*
+     * Don't spam every single rolling window.
+     */
+    if (
+        stats.samples ===
+            1 ||
+        stats.samples ===
+            ECON_MIN_SAMPLES ||
+        stats.samples %
+            5 ===
+            0
+    ) {
+        ns.tprint(
+            `[ECON] OBS | ` +
+            `${pct(stats.actualTake)}(req=${pct(stats.requestedTake)}) ` +
+            `gap=${stats.gap}ms ` +
+            `period=${stats.period}ms | ` +
+            `n=${stats.samples} | ` +
+            `wallEWMA=${fmtMoney(stats.wallEwma)}/s | ` +
+            `score=${fmtMoney(score)}/s | ` +
+            `noise=${pct(noise)} | ` +
+            `pid=${Math.round(stats.pidActualEwma)}/${stats.pidEstimate} | ` +
+            `pidRatio=${stats.pidRatioEwma.toFixed(3)} | ` +
+            `predErr=${pct(stats.predictionErrorEwma)} | ` +
+            `fail=${stats.failures}`
+        );
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * No champion yet.
+     *
+     * Force a real baseline dwell before allowing higher take.
+     * ------------------------------------------------------------
+     */
+    if (
+        profile.economicChampionKey ===
+        null
+    ) {
+        if (
+            stats.samples <
+            ECON_MIN_SAMPLES
+        ) {
+            return true;
+        }
+
+        profile.economicChampionKey =
+            key;
+
+        ns.tprint(
+            `[ECON] CHAMPION | ` +
+            `${pct(stats.actualTake)}(req=${pct(stats.requestedTake)}) ` +
+            `gap=${stats.gap}ms ` +
+            `period=${stats.period}ms | ` +
+            `wallEWMA=${fmtMoney(stats.wallEwma)}/s | ` +
+            `score=${fmtMoney(score)}/s`
+        );
+
+        /*
+         * Baseline is established.
+         *
+         * Existing γ3.x logic may now create ONE controlled
+         * challenger.
+         */
+        return false;
+    }
+
+    const champion =
+        profile.economicPolicies.get(
+            profile.economicChampionKey
+        );
+
+    /*
+     * Defensive recovery if profile memory became inconsistent.
+     */
+    if (!champion) {
+        profile.economicChampionKey =
+            key;
+
+        return true;
+    }
+
+    /*
+     * Current production policy is already champion.
+     *
+     * Existing controller may eventually unlock the next
+     * controlled challenger.
+     */
+    if (
+        champion.key ===
+        key
+    ) {
+        const theoreticalMinimum =
+            Math.max(
+                3 *
+                    lane.gap +
+                    cfg.guard,
+                250
+            );
+
+        /*
+         * If stability previously forced us to widen cadence,
+         * periodically challenge one faster cadence step.
+         *
+         * Only one dimension changes at a time.
+         */
+        if (
+            stats.samples >=
+                ECON_PERIOD_CHALLENGE_SAMPLES &&
+            controls.takeProbeCooldown ===
+                0 &&
+            champion.period >
+                theoreticalMinimum
+        ) {
+            const challengerPeriod =
+                Math.max(
+                    theoreticalMinimum,
+                    champion.period -
+                        ECON_PERIOD_STEP
+                );
+
+            if (
+                challengerPeriod <
+                champion.period
+            ) {
+                controls.periodFloor =
+                    challengerPeriod;
+
+                controls.takeProbeCooldown =
+                    Math.max(
+                        controls.takeProbeCooldown,
+                        8
+                    );
+
+                controls.stableWindows =
+                    0;
+
+                ns.tprint(
+                    `[ECON] PERIOD-CHALLENGE | ` +
+                    `${champion.period}ms -> ` +
+                    `${challengerPeriod}ms | ` +
+                    `take=${pct(champion.actualTake)} ` +
+                    `(req=${pct(champion.requestedTake)})`
+                );
+
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /*
+     * ------------------------------------------------------------
+     * Challenger dwell.
+     * ------------------------------------------------------------
+     */
+
+    if (
+        stats.samples <
+        ECON_MIN_SAMPLES
+    ) {
+        return true;
+    }
+
+    const championScore =
+        economicScore(
+            champion
+        );
+
+    const challengerScore =
+        score;
+
+    /*
+     * A challenger must demonstrate a MATERIAL wall-clock gain.
+     *
+     * Predicted EV is deliberately not the deciding metric.
+     */
+    if (
+        challengerScore >=
+        championScore *
+            (
+                1 +
+                ECON_PROMOTE_GAIN
+            )
+    ) {
+        profile.economicChampionKey =
+            key;
+
+        ns.tprint(
+            `[ECON] PROMOTE | ` +
+            `${pct(stats.actualTake)}(req=${pct(stats.requestedTake)}) ` +
+            `${stats.period}ms ` +
+            `${fmtMoney(challengerScore)}/s ` +
+            `> ` +
+            `${pct(champion.actualTake)}(req=${pct(champion.requestedTake)}) ` +
+            `${champion.period}ms ` +
+            `${fmtMoney(championScore)}/s`
+        );
+
+        /*
+         * Don't immediately mutate another policy dimension
+         * in the same observation that promoted a champion.
+         */
+        return true;
+    }
+
+    const materiallyWorse =
+        challengerScore <=
+        championScore *
+            (
+                1 -
+                ECON_REJECT_LOSS
+            );
+
+    const noMaterialGain =
+        stats.samples >=
+        ECON_MAX_CHALLENGER_SAMPLES;
+
+    if (
+        materiallyWorse ||
+        noMaterialGain
+    ) {
+        controls.takeCap =
+            clamp(
+                champion.requestedTake,
+                cfg.takeMin,
+                cfg.takeMax
+            );
+
+        controls.gapFloor =
+            champion.gap;
+
+        controls.periodFloor =
+            champion.period;
+
+        /*
+         * Economic rejection is weaker than a safety failure,
+         * but it still lowers the trusted frontier until a
+         * long clean dwell permits a re-test.
+         */
+        controls.learnedTakeCeiling =
+            Math.max(
+                cfg.takeMin,
+                Math.min(
+                    controls.learnedTakeCeiling,
+                    champion.requestedTake
+                )
+            );
+
+        controls.takeProbeCooldown =
+            Math.max(
+                controls.takeProbeCooldown,
+                ECON_RETEST_WINDOWS
+            );
+
+        controls.stableWindows =
+            0;
+
+        ns.tprint(
+            `[ECON] REJECT | ` +
+            `${pct(stats.actualTake)}(req=${pct(stats.requestedTake)}) ` +
+            `${stats.period}ms ` +
+            `${fmtMoney(challengerScore)}/s ` +
+            `vs champion ` +
+            `${pct(champion.actualTake)}(req=${pct(champion.requestedTake)}) ` +
+            `${champion.period}ms ` +
+            `${fmtMoney(championScore)}/s | ` +
+            `${
+                materiallyWorse
+                    ? "materially-worse"
+                    : "no-material-gain"
+            } | ` +
+            `retest=${ECON_RETEST_WINDOWS}`
+        );
+
+        return true;
+    }
+
+    /*
+     * Challenger is still gathering evidence.
+     *
+     * Do not let a third policy enter yet.
+     */
+    return true;
+}
+
+
 function adaptControls(
     ns: NS,
     controls: Controls,
@@ -5167,8 +6082,92 @@ function adaptControls(
                 );
         }
 
+        /*
+         * γ3.6.1 CADENCE-AWARE DRIFT CONTROL
+         *
+         * If target state collapses while scheduler telemetry is
+         * otherwise healthy, do NOT immediately blame take.
+         *
+         * First widen inter-batch cadence.
+         *
+         * This addresses the production pattern we observed:
+         *
+         *   pids ~5.3k < soft limit
+         *   p95-late = 0
+         *   jitter healthy
+         *   launchFail = 0
+         *   BUT target money still collapses
+         */
+        const lane =
+            plan.lanes[0];
+
+        const pureTargetDrift =
+            driftBad &&
+            !jitterBad &&
+            !lateBad &&
+            !launchBad &&
+            !pidSoftBad &&
+            !pidHardBad;
+
+        let cadenceBackedOff =
+            false;
+
         if (
-            driftBad ||
+            pureTargetDrift &&
+            lane &&
+            lane.period <
+                ECON_PERIOD_MAX
+        ) {
+            const nextPeriod =
+                Math.min(
+                    ECON_PERIOD_MAX,
+                    Math.max(
+                        lane.period +
+                            ECON_PERIOD_STEP,
+                        controls.periodFloor +
+                            ECON_PERIOD_STEP
+                    )
+                );
+
+            if (
+                nextPeriod >
+                lane.period
+            ) {
+                controls.periodFloor =
+                    nextPeriod;
+
+                controls.takeProbeCooldown =
+                    Math.max(
+                        controls.takeProbeCooldown,
+                        12
+                    );
+
+                cadenceBackedOff =
+                    true;
+
+                ns.tprint(
+                    `[ADAPT] CADENCE-BACKOFF | ` +
+                    `${lane.period}ms -> ` +
+                    `${controls.periodFloor}ms | ` +
+                    `take=${pct(lane.actualTake)} | ` +
+                    `pids=${metrics.trackedPids} | ` +
+                    `jitter=${metrics.p95Jitter.toFixed(1)}ms | ` +
+                    `late=${metrics.p95LateBy.toFixed(1)}ms`
+                );
+            }
+        }
+
+        /*
+         * Lower take only when:
+         *
+         * - cadence has already reached its adaptive ceiling, or
+         * - runtime PID pressure itself is the fault.
+         */
+        if (
+            (
+                driftBad &&
+                !cadenceBackedOff
+            ) ||
             pidHardBad
         ) {
             const safeTake =
@@ -5181,11 +6180,6 @@ function adaptControls(
             controls.takeCap =
                 safeTake;
 
-            /*
-             * Anything above the original 25% production floor is
-             * experimental overdrive. A real fault there becomes
-             * empirical evidence for a lower ceiling.
-             */
             if (
                 controls.takeCap >=
                     0.25 -
@@ -5244,6 +6238,12 @@ function adaptControls(
                 );
         }
 
+        recordEconomicPolicyFailure(
+            controls,
+            plan,
+            environmentSignature
+        );
+
         recordPolicyFailure(
             controls
         );
@@ -5256,6 +6256,7 @@ function adaptControls(
             `pids=${metrics.trackedPids}/${cfg.pidSoftLimit}/${cfg.pidHardLimit} | ` +
             `profile=${controls.activeProfileKey || "-"} | ` +
             `gapFloor=${controls.gapFloor}ms | ` +
+            `periodFloor=${controls.periodFloor || 0}ms | ` +
             `lead=${cfg.launchLead}ms | ` +
             `safety=${cfg.safety.toFixed(3)} | ` +
             `lanes=${controls.allowedTargets}`
@@ -5474,6 +6475,31 @@ function adaptControls(
             `profile=${controls.activeProfileKey || "-"}`
         );
 
+        return;
+    }
+
+    /*
+     * ========================================================
+     * γ3.6 ECONOMIC FRONTIER
+     *
+     * Timing envelope is already stable here.
+     *
+     * Before increasing aggression again, require wall-clock
+     * evidence that the current policy deserves to remain.
+     * ========================================================
+     */
+
+    const economicHold =
+        observeEconomicFrontier(
+            ns,
+            controls,
+            metrics,
+            plan,
+            cfg,
+            environmentSignature
+        );
+
+    if (economicHold) {
         return;
     }
 
