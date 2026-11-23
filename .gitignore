@@ -4,3 +4,4 @@ NetScriptDefinitions.d.ts
 
 # Node / TypeScript
 node_modules/
+.vscode/
