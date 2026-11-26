@@ -6,5 +6,6 @@ NetScriptDefinitions.d.ts
 node_modules/
 .vscode/
 
-# Local patch recovery backups
+# Local recovery backups
 /backups/
+/backup/
