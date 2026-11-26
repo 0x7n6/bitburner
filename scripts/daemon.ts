@@ -3,7 +3,10 @@ import type { NS } from "@ns";
 const ENGINE =
     "jit5.ts";
 
-const PROGRESSION =
+const EARLY_ENGINE = 
+    "early.ts";
+
+    const PROGRESSION =
     "progression.ts";
 
 const SHARE_MANAGER =
@@ -200,11 +203,33 @@ export async function main(
             );
         }
 
-        superviseEngine(
-            ns,
-            supervisor,
-            now
+        const homeRam = ns.getServerMaxRam("home");
+        const hack = ns.getHackingLevel();
+
+        const earlyRunning = ns.ps("home").some(
+            p => p.filename === EARLY_ENGINE
         );
+
+        const jitRunning = ns.ps("home").some(
+            p => p.filename === ENGINE
+        );
+
+        const coldBoot =
+            homeRam < 128 ||
+            hack < 50;
+
+        if (earlyRunning) {
+            // Keep the recovery engine in control.
+            // Automatic handoff will be added in Part III.
+        } else if (coldBoot && !jitRunning) {
+            ensureSingleton(ns, EARLY_ENGINE);
+        } else {
+            superviseEngine(
+                ns,
+                supervisor,
+                now
+            );
+        }
 
         /*
          * Share is a home-only opportunistic service.
@@ -212,6 +237,9 @@ export async function main(
          * needs home RAM.
          */
         if (
+            !coldBoot &&
+            !earlyRunning &&
+            homeRam > 512 &&
             ns.fileExists(
                 SHARE_MANAGER,
                 "home"
@@ -225,6 +253,8 @@ export async function main(
 
         if (
             singularity &&
+            !coldBoot &&
+            !earlyRunning &&
             ns.fileExists(
                 PROGRESSION,
                 "home"
