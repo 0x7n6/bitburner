@@ -3,10 +3,13 @@ import type { NS } from "@ns";
 const ENGINE =
     "jit5.ts";
 
-const EARLY_ENGINE = 
+const EARLY_ENGINE =
     "early.ts";
 
-    const PROGRESSION =
+const ENGINE_MODE_FILE =
+    ".7n8-engine-mode.txt";
+
+const PROGRESSION =
     "progression.ts";
 
 const SHARE_MANAGER =
@@ -203,6 +206,16 @@ export async function main(
             );
         }
 
+        const engineMode =
+            ns.read(ENGINE_MODE_FILE).trim() || "auto";
+
+        // Manual mode keeps network/root supervision alive,
+        // but disables automatic production services.
+        if (engineMode === "manual") {
+            await ns.sleep(cycle);
+            continue;
+        }
+
         const homeRam = ns.getServerMaxRam("home");
         const hack = ns.getHackingLevel();
 
@@ -215,6 +228,8 @@ export async function main(
         );
 
         const coldBoot =
+            engineMode === "early" ||
+            reset.currentNode === 8 ||
             homeRam < 128 ||
             hack < 50;
 
@@ -255,6 +270,9 @@ export async function main(
             singularity &&
             !coldBoot &&
             !earlyRunning &&
+            !ns.ps("home").some(
+                p => p.filename === "findV2.ts"
+            ) &&
             ns.fileExists(
                 PROGRESSION,
                 "home"
@@ -501,6 +519,12 @@ function superviseEngine(
         free <
         ram
     ) {
+        ns.print(
+            `[ENGINE] BLOCKED | ` +
+            `required=${ram.toFixed(2)}GB | ` +
+            `free=${free.toFixed(2)}GB`
+        );
+
         state.restartAfter =
             now +
             5000;

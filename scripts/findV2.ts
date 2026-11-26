@@ -33,7 +33,23 @@ export async function main(ns: NS): Promise<void> {
     }
 
     // Coba buka akses root otomatis jika belum root
-    tryAutoRoot(ns, resolvedTarget);
+    if (!options.dryRun) {
+        if (ns.ps("home").some(
+            p => p.filename === "progression.ts"
+        )) {
+            ns.tprint(
+                "[BUSY] progression.ts owns navigation. " +
+                "Use --dry or stop OS first."
+            );
+            return;
+        }
+
+        try {
+            tryAutoRoot(ns, resolvedTarget);
+        } catch (error) {
+            ns.tprint(`[ROOT] ${String(error)}`);
+        }
+    }
 
     const server = ns.getServer(resolvedTarget);
     const hasRoot = ns.hasRootAccess(resolvedTarget);
@@ -42,8 +58,15 @@ export async function main(ns: NS): Promise<void> {
     const canBackdoor = hasRoot && !server.backdoorInstalled && playerHack >= reqHack;
 
     const hopList = path.slice(1);
-    const connectChain = hopList.map(host => `connect ${host}`).join("; ");
-    const willBackdoor = options.autoBackdoor && canBackdoor;
+    const connectChain = [
+        "home",
+        ...hopList.map(host => `connect ${host}`)
+    ].join("; ");
+    const willBackdoor =
+        options.autoBackdoor &&
+        canBackdoor &&
+        resolvedTarget !== "home" &&
+        resolvedTarget !== "w0r1d_d43m0n";
     const fullCommand = willBackdoor ? `${connectChain}; backdoor` : connectChain;
 
     ns.tprint("");
@@ -69,7 +92,13 @@ export async function main(ns: NS): Promise<void> {
     // Eksekusi: Prioritaskan Singularity API jika SF4 tersedia, fallback ke Terminal DOM
     const singularitySuccess = await trySingularityConnect(ns, hopList, willBackdoor);
     if (!singularitySuccess) {
-        const injected = injectTerminalCommand(fullCommand);
+        let injected = false;
+
+        try {
+            injected = injectTerminalCommand(fullCommand);
+        } catch (error) {
+            ns.print(`[DOM] ${String(error)}`);
+        }
         if (injected) {
             ns.tprint(`[EXEC:DOM] Menghubungkan ke ${resolvedTarget}${willBackdoor ? " + backdoor" : ""}...`);
         } else {
@@ -170,8 +199,13 @@ function tryAutoRoot(ns: NS, target: string): void {
 
     const reqPorts = ns.getServerNumPortsRequired(target);
     if (opened >= reqPorts) {
-        ns.nuke(target);
-        ns.tprint(`[ROOT] Berhasil mendapatkan root access di '${target}'.`);
+        if (ns.nuke(target)) {
+            ns.tprint(
+                `[ROOT] Berhasil mendapatkan root access di '${target}'.`
+            );
+        } else {
+            ns.tprint(`[ROOT] NUKE failed: ${target}`);
+        }
     }
 }
 
@@ -187,7 +221,9 @@ async function trySingularityConnect(
         // Cek apakah Singularity tersedia tanpa memicu crash jika terkunci
         if (typeof ns.singularity?.connect !== "function") return false;
 
-        ns.singularity.connect("home");
+        if (!ns.singularity.connect("home")) {
+            return false;
+        }
         for (const host of hops) {
             if (!ns.singularity.connect(host)) return false;
         }
@@ -196,8 +232,16 @@ async function trySingularityConnect(
 
         if (installBackdoor) {
             ns.tprint(`[EXEC:SF4] Memasang backdoor...`);
-            await ns.singularity.installBackdoor();
-            ns.tprint(`[EXEC:SF4] Backdoor selesai terpasang!`);
+            try {
+                await ns.singularity.installBackdoor();
+                ns.tprint(
+                    "[EXEC:SF4] Backdoor selesai terpasang!"
+                );
+            } catch (error) {
+                ns.tprint(
+                    `[BACKDOOR] FAILED: ${String(error)}`
+                );
+            }
         }
         return true;
     } catch {

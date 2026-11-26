@@ -22,6 +22,7 @@ export async function main(ns: NS): Promise<void> {
     const flags = ns.flags([
         ["target", ""],
         ["take", 0.10],
+        ["xp", false],
         ["tail", false],
     ]);
 
@@ -36,6 +37,14 @@ export async function main(ns: NS): Promise<void> {
         : 0.10;
 
     const fixedTarget = String(flags.target);
+    const node = ns.getResetInfo().currentNode;
+
+    // BN8 grants no player income from script hacking.
+    const xpMode = Boolean(flags.xp) || node === 8;
+
+    ns.tprint(
+        `[EARLY] BN${node} | mode=${xpMode ? "XP" : "MONEY"}`
+    );
 
     let previousTarget = "";
 
@@ -51,9 +60,16 @@ export async function main(ns: NS): Promise<void> {
     while (!ns.fileExists(PAUSE_FILE, "home")) {
         const hack = ns.getHackingLevel();
 
-        // Conservative early-game target policy.
         const target = fixedTarget ||
-            (hack >= 10 ? "foodnstuff" : "n00dles");
+            (xpMode || hack < 10
+                ? "n00dles"
+                : selectTarget(ns, previousTarget));
+
+        if (!target) {
+            ns.print("[WAIT] No eligible target");
+            await ns.sleep(2000);
+            continue;
+        }
 
         if (!ns.serverExists(target)) {
             ns.tprint(`[EARLY] Unknown target: ${target}`);
@@ -91,8 +107,14 @@ export async function main(ns: NS): Promise<void> {
         let worker: WorkerScript;
         let wanted: number;
 
+        // XP mode uses all available remote threads.
+        if (xpMode) {
+            worker = "w.ts";
+            wanted = Infinity;
+        }
+
         // Priority 1: repair security.
-        if (security > minSecurity + 0.05) {
+        else if (security > minSecurity + 0.05) {
             worker = "w.ts";
 
             wanted = Math.ceil(
@@ -119,7 +141,10 @@ export async function main(ns: NS): Promise<void> {
         else {
             const hackPct = ns.hackAnalyze(target);
 
-            if (hackPct <= 0) {
+            if (
+                hackPct <= 0 ||
+                ns.hackAnalyzeChance(target) <= 0
+            ) {
                 // Gain experience until hacking becomes viable.
                 worker = "w.ts";
                 wanted = Infinity;
@@ -207,6 +232,87 @@ export async function main(ns: NS): Promise<void> {
     }
 
     ns.tprint("[EARLY] Paused");
+}
+
+function selectTarget(
+    ns: NS,
+    current: string
+): string {
+    const hacking = ns.getHackingLevel();
+
+    let best = "";
+    let bestScore = 0;
+    let currentScore = 0;
+
+    for (const host of scanAll(ns)) {
+        if (host === "home") continue;
+        if (host === "w0r1d_d43m0n") continue;
+
+        if (!ns.hasRootAccess(host)) continue;
+
+        if (
+            ns.getServerRequiredHackingLevel(host) >
+            hacking
+        ) continue;
+
+        const maxMoney =
+            ns.getServerMaxMoney(host);
+
+        if (maxMoney <= 0) continue;
+
+        const money =
+            ns.getServerMoneyAvailable(host);
+
+        const chance =
+            ns.hackAnalyzeChance(host);
+
+        const fraction =
+            ns.hackAnalyze(host);
+
+        const seconds =
+            ns.getHackTime(host) / 1000;
+
+        if (
+            chance <= 0 ||
+            fraction <= 0 ||
+            !Number.isFinite(seconds) ||
+            seconds <= 0
+        ) continue;
+
+        // Penalize unprepared targets.
+        const readiness =
+            0.5 + 0.5 *
+            Math.max(
+                0,
+                Math.min(1, money / maxMoney)
+            );
+
+        const score =
+            maxMoney *
+            chance *
+            fraction *
+            readiness /
+            seconds;
+
+        if (host === current) {
+            currentScore = score;
+        }
+
+        if (score > bestScore) {
+            bestScore = score;
+            best = host;
+        }
+    }
+
+    // Hysteresis prevents constant target switching.
+    if (
+        currentScore > 0 &&
+        bestScore < currentScore * 1.5
+    ) {
+        return current;
+    }
+
+    return best || "n00dles";
 }
 
 function getPool(

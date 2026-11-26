@@ -41,6 +41,7 @@ export async function main(
 
     const victims =
         new Set([
+            "early.ts",
             "jit5.ts",
 
             "j5h.ts",
@@ -100,15 +101,36 @@ export async function main(
         );
 
         victims.add(
+            BOOTSTRAP
+        );
+
+        victims.add(
             "progression.ts"
         );
     }
 
+    let killed = 0;
+
+    // Stop supervisors before taking process snapshots.
+    // Otherwise a supervisor could recreate a service.
+    if (flags.os) {
+        for (const filename of [BOOTSTRAP, DAEMON]) {
+            for (const proc of ns.ps("home")) {
+                if (proc.filename !== filename) continue;
+
+                if (ns.kill(proc.pid)) {
+                    killed++;
+
+                    ns.tprint(
+                        `KILL ${proc.pid} ${filename} @ home`
+                    );
+                }
+            }
+        }
+    }
+
     const hosts =
         scanAll(ns);
-
-    let killed =
-        0;
 
     for (
         const host
