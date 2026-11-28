@@ -5,6 +5,7 @@ import { main as schedule, planAdmission } from "../scripts/jit6.ts";
 import { main as upgradeHome } from "../scripts/jit6-home.ts";
 import { observeProgression } from "../scripts/bt4-plan.ts";
 import { main as stopfarm } from "../scripts/stopfarm.ts";
+import { main as share } from "../scripts/share.ts";
 
 function snapshot(overrides = {}) {
     return {
@@ -20,6 +21,7 @@ test("planner prioritizes bounded upgrade, then fits work inside measured RAM", 
     assert.equal(planAdmission(snapshot({ free: 17 }), 0, false).job, "mission-study.ts");
     assert.equal(planAdmission(snapshot({ free: 10 }), 0, false).job, null);
     assert.equal(planAdmission(snapshot(), 200, false).job, "bt4-auto.ts");
+    assert.equal(planAdmission(snapshot({ free: 17 }), 0, false, 100).job, null);
 });
 
 test("planner rejects paused, locked, expired or externally owned work and honors capital ownership", () => {
@@ -28,17 +30,19 @@ test("planner rejects paused, locked, expired or externally owned work and honor
         assert.equal(planAdmission(snapshot(state), 256, false).job, null);
     }
     assert.equal(planAdmission(snapshot({ capitalOwner: "trader.ts" }), 256, false).job, "bt4-auto.ts");
+    assert.equal(planAdmission(snapshot({ capitalOwner: "trader.ts" }), 0, false, 100).job, null);
 });
 
 function fixture(context, flags = {}) {
     const state = {
         now: 1_000, processes: [], cash: 1000, price: 200, max: 128, used: 32,
-        node: 4, augReset: 3, locked: false, upgrades: 0, launches: [], killed: [], logs: [],
+        node: 4, augReset: 3, locked: false, stock: true, upgrades: 0, launches: [], killed: [], logs: [],
         nextPid: 500, failExec: false, onSleep: () => {}, exit: () => {},
         files: new Set(["bt4-plan.ts"]),
     };
     context.mock.method(Date, "now", () => state.now);
-    const costs = { "bt4-auto.ts": 41.15, "mission-study.ts": 5, "jit6-home.ts": 8, "stopfarm.ts": 6 };
+    const costs = { "bt4-auto.ts": 41.15, "mission-study.ts": 5, "jit6-home.ts": 8, "stopfarm.ts": 6,
+        "share.ts": 4, "share-worker.ts": 4, "trader.ts": 32 };
     const ns = {
         pid: 20, args: [], disableLog: () => {},
         flags: () => ({ execute: true, minutes: 1, "home-target": 0, "home-cap": 0, reserve: 0, _: [], ...flags }),
@@ -53,11 +57,13 @@ function fixture(context, flags = {}) {
         getScriptRam: name => costs[name],
         getPlayer: () => ({ money: state.cash }),
         fileExists: file => state.files.has(file),
+        read: () => "",
         write: async file => { state.files.add(file); },
         rm: file => state.files.delete(file),
         scan: () => [],
         ps: () => state.processes,
         tprint: line => state.logs.push(line),
+        print: () => {},
         atExit: callback => { state.exit = callback; },
         kill: pid => { state.killed.push(pid); return true; },
         sleep: async time => { state.now += time; state.onSleep(); },
@@ -77,6 +83,7 @@ function fixture(context, flags = {}) {
                 return true;
             },
         },
+        stock: { hasTixApiAccess: () => state.stock, has4SDataTixApi: () => state.stock },
     };
     return { ns, state };
 }
@@ -125,6 +132,74 @@ test("pause shuts down only a child PID launched by this session", async context
     state.onSleep = () => { state.files.add(".7n8-pause.txt"); };
     await schedule(ns);
     state.exit();
+    assert.deepEqual(state.killed, [500]);
+});
+
+test("JIT6 carries an authorized augmentation budget and refuses to mix it with trading", async context => {
+    const { ns, state } = fixture(context, { "augment-cap": 100, reserve: 700 });
+    await schedule(ns);
+    assert.deepEqual(state.launches[0].args.slice(-4), ["--reserve", 700, "--budget", 100]);
+    const flags = ns.flags();
+    ns.flags = () => ({ ...flags, trader: true });
+    await schedule(ns);
+    assert.equal(state.launches.length, 1);
+    assert.match(state.logs.at(-1), /without purchase budgets/);
+});
+
+test("Trader can run in BN8 with Singularity locked and only a new launch can rearm it", async context => {
+    const { ns, state } = fixture(context, { trader: true, reserve: 750 });
+    state.node = 8;
+    state.files.add(".7n8-trader-disabled.txt");
+    ns.read = () => "operator marker at start";
+    await schedule(ns);
+    assert.deepEqual(state.launches.map(launch => launch.name), ["trader.ts"]);
+    assert.deepEqual(state.launches[0].args, ["--reserve-abs", 750, "--disable-shorts", "--mission-owned"]);
+    assert.equal(state.files.has(".7n8-mission-trader-hold.txt"), true);
+    assert.equal(state.files.has(".7n8-trader-disabled.txt"), false);
+    state.exit();
+    assert.deepEqual(state.killed, [500]);
+});
+
+test("optional services wait when stock access or Share headroom is absent", async context => {
+    const { ns, state } = fixture(context, { share: true, trader: true, reserve: 750 });
+    state.stock = false;
+    await schedule(ns);
+    assert.deepEqual(state.launches.map(launch => launch.name), ["bt4-auto.ts"]);
+    assert.ok(state.logs.some(log => log.includes("TIX and 4S TIX access")));
+    assert.ok(state.logs.some(log => log.includes("512 GB of headroom")));
+    assert.equal(state.files.has(".7n8-mission-trader-hold.txt"), false);
+});
+
+test("Trader respects a hold placed while JIT6 was preparing to launch", async context => {
+    const { ns, state } = fixture(context, { trader: true, reserve: 750 });
+    state.onSleep = () => { state.files.add(".7n8-trader-disabled.txt"); };
+    await schedule(ns);
+    assert.deepEqual(state.launches.map(launch => launch.name), ["bt4-auto.ts"]);
+    assert.match(state.logs.find(log => log.includes("disabled during")), /Trader was disabled during this session/);
+});
+
+test("JIT6 stops both services and work it launched when the reset generation changes", async context => {
+    const { ns, state } = fixture(context, { share: true, trader: true, reserve: 750 });
+    state.max = 1024;
+    state.onSleep = () => { if (state.launches.length === 3) state.augReset++; };
+    await schedule(ns);
+    assert.deepEqual(state.launches.map(launch => launch.name), ["bt4-auto.ts", "trader.ts", "share.ts"]);
+    assert.deepEqual(state.launches[2].args, ["--reserve", 512, "--owner", 20]);
+    assert.match(state.logs.at(-1), /Reset changed/);
+    state.exit();
+    assert.deepEqual(state.killed, [501, 502, 500]);
+});
+
+test("managed Share owns only the worker from its own launch", async context => {
+    const { ns, state } = fixture(context, { owner: 1, reserve: 512 });
+    state.max = 1024;
+    state.files.add("share-worker.ts");
+    state.processes = [{ filename: "jit6.ts", pid: 1, args: ["--execute"] }];
+    ns.getSharePower = () => 1;
+    state.onSleep = () => { state.processes = [{ filename: "share-worker.ts", pid: 501, threads: 1 }]; };
+    await share(ns);
+    state.exit();
+    assert.deepEqual(state.launches.map(launch => launch.name), ["share-worker.ts"]);
     assert.deepEqual(state.killed, [500]);
 });
 

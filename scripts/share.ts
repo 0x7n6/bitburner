@@ -28,9 +28,14 @@ export async function main(
             ["reserve", 512],
             ["max-pct", 0.75],
             ["cycle", 5000],
+            ["owner", 0],
         ]);
 
     ns.disableLog("ALL");
+    const owner = Number(flags.owner ?? 0);
+    if (!Number.isSafeInteger(owner) || owner < 0) return;
+    let ownedWorker = 0;
+    if (owner) ns.atExit(() => { if (ownedWorker) ns.kill(ownedWorker); });
 
     const reserve =
         Math.max(
@@ -76,13 +81,14 @@ export async function main(
         -1;
 
     while (true) {
-        const worker =
-            ns.ps("home")
-                .find(
-                    proc =>
-                        proc.filename ===
-                        WORKER
-                );
+        const processes = ns.ps("home");
+        const worker = processes.find(proc => proc.filename === WORKER);
+        if (owner && (!processes.some(proc => proc.pid === owner && proc.filename === "jit6.ts") ||
+            processes.some(proc => proc.filename === "share.ts" && proc.pid !== ns.pid) ||
+            (worker && worker.pid !== ownedWorker))) {
+            ns.print("[SHARE] JIT6 ownership ended or another Share process is active.");
+            return;
+        }
 
         if (
             ns.fileExists(
@@ -120,7 +126,7 @@ export async function main(
          * allocated away from home, so it must NOT evict share.
          */
         const productionBlocker =
-            ns.ps("home")
+            processes
                 .find(
                     proc => {
                         if (
@@ -286,9 +292,8 @@ export async function main(
                     worker.pid
                 );
 
-                await ns.sleep(
-                    50
-                );
+                if (owner) ownedWorker = 0;
+                else await ns.sleep(50);
             }
 
             if (
@@ -303,6 +308,7 @@ export async function main(
                     );
 
                 if (pid) {
+                    if (owner) ownedWorker = pid;
                     ns.tprint(
                         `[SHARE] threads=${desired} | ` +
                         `RAM=${fmtRam(

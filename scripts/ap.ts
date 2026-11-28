@@ -1,16 +1,14 @@
 import type { NS } from "@ns";
+import { BIT_NODES, bitNodeCatalog, factionCatalog, factionOverview, findFaction } from "./bitburner-catalog.ts";
 
 type ScriptArg = string | number | boolean;
 
-const MODE_FILE = ".7n8-engine-mode.txt";
 const PAUSE_FILE = ".7n8-pause.txt";
 
 const BT4_AUTO = "bt4-auto.ts";
 const JIT6_SUPPORT = "jit6.ts";
-
-const MISSION_TOOLS = new Set([
-    "bt4.ts", "bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts", "mission.ts", "mission-study.ts", BT4_AUTO, JIT6_SUPPORT,
-]);
+const JIT6_DASHBOARD = "jit6-dashboard.ts";
+const JIT6_FACTION = "jit6-faction.ts";
 
 const ENGINES = [
     "early.ts",
@@ -33,6 +31,10 @@ const FARM = new Set([
     ...WORKERS,
     "share.ts",
 ]);
+const AP_BLOCKED_STARTS = new Set([
+    ...FARM, "daemon.ts", "bootstrap.ts", "progression.ts", "mission.ts",
+    "mission-study.ts", "jit6-home.ts", BT4_AUTO, "trader.ts",
+]);
 
 export async function main(ns: NS): Promise<void> {
     ns.disableLog("ALL");
@@ -41,16 +43,15 @@ export async function main(ns: NS): Promise<void> {
         showStatus(ns);
 
         const menu = await ns.prompt(
-            "7n8 CONTROL PLANE V2",
+            "7n8 JIT6 MISSION CONTROL",
             {
                 type: "select",
                 choices: [
+                    "JIT6 dashboard",
+                    "JIT6 sessions",
+                    "Progression tools",
                     "OS lifecycle",
-                    "Economic engines",
                     "Network intelligence",
-                    "BN4 mission",
-                    "Mission coordination",
-                    "JIT6 support scheduler",
                     "Capital management",
                     "System services",
                     "Universal script launcher",
@@ -67,23 +68,19 @@ export async function main(ns: NS): Promise<void> {
                 await lifecycle(ns);
                 break;
 
-            case "Economic engines":
-                await economics(ns);
+            case "JIT6 dashboard":
+                await jit6Dashboard(ns);
                 break;
 
             case "Network intelligence":
                 await network(ns);
                 break;
 
-            case "JIT6 support scheduler":
+            case "JIT6 sessions":
                 await jit6Support(ns);
                 break;
 
-            case "Mission coordination":
-                await missionCoordination(ns);
-                break;
-
-            case "BN4 mission":
+            case "Progression tools":
                 await mission(ns);
                 break;
 
@@ -108,14 +105,6 @@ export async function main(ns: NS): Promise<void> {
     }
 }
 
-function engineMode(ns: NS): string {
-    const mode = ns.read(MODE_FILE).trim();
-
-    return ["auto", "early", "manual"].includes(mode)
-        ? mode
-        : "auto";
-}
-
 function showStatus(ns: NS): void {
     const reset = ns.getResetInfo();
     const home = ns.getServer("home");
@@ -131,6 +120,7 @@ function showStatus(ns: NS): void {
         .filter(p => ENGINES.includes(p.filename))
         .map(p => p.filename)
         .join(", ");
+    const session = running.find(p => p.filename === JIT6_SUPPORT && p.args.includes("--execute"));
 
     const openers = [
         "BruteSSH.exe",
@@ -150,14 +140,13 @@ function showStatus(ns: NS): void {
 
     ns.tprint("");
     ns.tprint("==========================================");
-    ns.tprint("       7n8 ADAPTIVE CONTROL PLANE V2");
+    ns.tprint("          7n8 JIT6 MISSION CONTROL");
     ns.tprint("==========================================");
 
-    ns.tprint(`BitNode    : ${reset.currentNode}`);
+    ns.tprint(`BitNode    : ${reset.currentNode} | ${BIT_NODES[reset.currentNode]?.name ?? "Unknown"}`);
     ns.tprint(`SF1        : ${sf1}/3`);
     ns.tprint(`SF4        : ${sf4}/3`);
     ns.tprint(`Singularity: ${singularity ? "YES" : "NO"}`);
-    ns.tprint(`Policy     : ${engineMode(ns).toUpperCase()}`);
 
     ns.tprint(
         `OS         : ${
@@ -197,13 +186,15 @@ function showStatus(ns: NS): void {
         }`
     );
 
-    ns.tprint(`Engine     : ${engine || "IDLE"}`);
-    ns.tprint(`Daemon     : ${status("daemon.ts")}`);
+    ns.tprint(`JIT6       : ${session ? `ONLINE (${session.pid})` : "OFFLINE"}`);
+    if (engine) ns.tprint(`Legacy engine: ${engine}`);
+    if (running.some(p => p.filename === "daemon.ts" || p.filename === "bootstrap.ts")) {
+        ns.tprint("Legacy supervisor detected. Use Shutdown OS before resuming JIT6.");
+    }
     ns.tprint(`BT4 AUTO   : ${status(BT4_AUTO)}`);
-    ns.tprint(`JIT6 Support: ${status(JIT6_SUPPORT)}`);
-    ns.tprint(`Progression: ${status("progression.ts")}`);
     ns.tprint(`Share      : ${status("share.ts")}`);
     ns.tprint(`Trader     : ${status("trader.ts")}`);
+    ns.tprint(`DarkscapeNavigator: ${ns.fileExists("DarkscapeNavigator.exe", "home") ? "PRESENT" : "MISSING"}`);
     ns.tprint("==========================================");
 }
 
@@ -237,119 +228,76 @@ async function ask(
 
 async function lifecycle(ns: NS): Promise<void> {
     const choice = await choose(ns, "OS lifecycle", [
-        "Pause farming",
-        "Resume / bootstrap",
+        "Pause OS",
+        "Resume JIT6 work",
+        "Unpause for manual session setup",
         "Shutdown OS",
-        "Change engine policy",
-    ]);
-
-    if (choice === "Pause farming") {
-        await launchAndWait(ns, "stopfarm.ts", []);
-    }
-
-    if (choice === "Resume / bootstrap") {
-        await launchAndWait(
-            ns,
-            "stopfarm.ts",
-            ["--resume"]
-        );
-    }
-
-    if (choice === "Shutdown OS") {
-        await launchAndWait(
-            ns,
-            "stopfarm.ts",
-            ["--os"]
-        );
-    }
-
-    if (choice === "Change engine policy") {
-        const mode = await choose(
-            ns,
-            "Engine policy",
-            ["auto", "early", "manual"]
-        );
-
-        if (mode === "Back") return;
-
-        if (ns.ps("home").some(
-            p => FARM.has(p.filename)
-        )) {
-            ns.tprint(
-                "[POLICY] Pause farming before switching mode."
-            );
-            return;
-        }
-
-        await ns.write(MODE_FILE, mode, "w");
-
-        ns.tprint(
-            `[POLICY] ${mode.toUpperCase()} selected.`
-        );
-
-        ns.tprint(
-            "[POLICY] Resume OS to apply the policy."
-        );
-    }
-}
-
-async function economics(ns: NS): Promise<void> {
-    const choice = await choose(ns, "Economic engines", [
-        "Early recovery",
-        "Early XP mode",
-        "JIT5 closed-loop AUTO",
-        "JIT5 planner dry-run",
-        "JIT5 bounded benchmark",
-        "Harvest target",
-        "Prep / repair target",
     ]);
 
     switch (choice) {
-        case "Early recovery":
-            launch(ns, "early.ts", ["--tail"]);
-            break;
+        case "Pause OS":
+            await launchAndWait(ns, "stopfarm.ts", []);
+            return;
+        case "Resume JIT6 work":
+            await launchAndWait(ns, "stopfarm.ts", ["--resume"]);
+            return;
+        case "Unpause for manual session setup":
+            await launchAndWait(ns, "stopfarm.ts", ["--resume", "--support-only"]);
+            return;
+        case "Shutdown OS":
+            await launchAndWait(ns, "stopfarm.ts", ["--os"]);
+    }
+}
 
-        case "Early XP mode":
-            launch(ns, "early.ts", ["--xp", "--tail"]);
-            break;
-
-        case "JIT5 closed-loop AUTO":
-            launch(ns, "jit5.ts", ["--tail"]);
-            break;
-
-        case "JIT5 planner dry-run":
-            await launchAndWait(
-                ns,
-                "jit5.ts",
-                ["--dry-run", "--tail"]
-            );
-            break;
-
-        case "JIT5 bounded benchmark":
-            launch(
-                ns,
-                "jit5.ts",
-                ["--limit", 40, "--tail"]
-            );
-            break;
-
-        case "Harvest target":
-        case "Prep / repair target": {
-            const target = await ask(
-                ns,
-                "Target hostname"
-            );
-
-            if (!target) return;
-
-            const args: ScriptArg[] = [target, "--tail"];
-
-            if (choice === "Prep / repair target") {
-                args.push("--prep-only");
+async function jit6Dashboard(ns: NS): Promise<void> {
+    const choice = await choose(ns, "JIT6 dashboard", [
+        "Current BitNode and readiness", "Augmentation reset readiness", "BitNode catalog", "BitNode multipliers", "Faction catalog", "Faction details",
+    ]);
+    switch (choice) {
+        case "Current BitNode and readiness":
+            await launchAndWait(ns, JIT6_DASHBOARD, []);
+            return;
+        case "Augmentation reset readiness": {
+            const reset = ns.getResetInfo();
+            if ((reset.currentNode === 4 || (reset.ownedSF.get(4) ?? 0) > 0) &&
+                await launchAndWait(ns, "bt4-detail.ts", ["--dry-run"])) return;
+            ns.tprint("See the in-game Augmentations panel for the queued list and reset preview.");
+            return;
+        }
+        case "BitNode catalog":
+            for (const line of bitNodeCatalog(ns.getResetInfo())) ns.tprint(line);
+            return;
+        case "BitNode multipliers": {
+            const input = await ask(ns, "BitNode number (1–15, blank for current)");
+            if (input === null) return;
+            if (!input) {
+                await launchAndWait(ns, "jit6-multipliers.ts", []);
+                return;
             }
-
-            launch(ns, "harvest.ts", args);
-            break;
+            const node = Number(input);
+            if (!Object.hasOwn(BIT_NODES, node)) {
+                ns.tprint("[JIT6] Choose a BitNode number from 1 to 15.");
+                return;
+            }
+            const level = node === 12 ? await askNonnegative(ns, "BN12 level to inspect (1 or higher)") : 1;
+            if (level !== null) await launchAndWait(ns, "jit6-multipliers.ts", [node, level]);
+            return;
+        }
+        case "Faction catalog":
+            for (const line of factionCatalog(ns.getPlayer().factions)) ns.tprint(line);
+            return;
+        case "Faction details": {
+            const input = await ask(ns, "Faction name, e.g. Daedalus");
+            if (!input) return;
+            const faction = findFaction(input);
+            if (!faction) {
+                ns.tprint("[FACTION] Enter a name from the Faction catalog.");
+                return;
+            }
+            const reset = ns.getResetInfo();
+            if ((reset.currentNode === 4 || (reset.ownedSF.get(4) ?? 0) > 0) && await launchAndWait(ns, JIT6_FACTION, [faction])) return;
+            for (const line of factionOverview(faction, ns.getPlayer().factions)) ns.tprint(line);
+            ns.tprint("See the in-game faction panel for this save's offers and invitations.");
         }
     }
 }
@@ -426,31 +374,35 @@ async function network(ns: NS): Promise<void> {
 }
 
 async function jit6Support(ns: NS): Promise<void> {
-    const choice = await choose(ns, "JIT6 support scheduler", [
-        "Preview admission", "Resume support only", "Start work session",
-        "Start work with one home upgrade", "Stop JIT6 support",
+    const choice = await choose(ns, "JIT6 sessions", [
+        "Preview admission", "Start work session", "Start work with an augmentation budget",
+        "Start work with one home upgrade", "Start work and Share", "Start work and Trader",
+        "Start work with Share and Trader", "Stop JIT6 session",
     ]);
     if (choice === "Back") return;
     if (choice === "Preview admission") {
         await launchAndWait(ns, JIT6_SUPPORT, []);
         return;
     }
-    if (choice === "Resume support only") {
-        await launchAndWait(ns, "stopfarm.ts", ["--resume", "--support-only"]);
-        return;
-    }
-    if (choice === "Stop JIT6 support") {
+    if (choice === "Stop JIT6 session") {
         const pilot = ns.ps("home").find(p => p.filename === JIT6_SUPPORT && p.args.includes("--execute"));
         if (!pilot) {
             ns.tprint("[JIT6 SUPPORT] Offline.");
-        } else if (await ns.prompt("Stop this scheduler session? Existing player activity continues.", { type: "boolean" }) === true) {
+        } else if (await ns.prompt("Stop JIT6 and its services? Player activity continues and Trader positions are held.", { type: "boolean" }) === true) {
             ns.tprint(ns.kill(pilot.pid) ? "[JIT6 SUPPORT] Stopped." : "[JIT6 SUPPORT] Scheduler already exited.");
         }
         return;
     }
 
-    const args: ScriptArg[] = ["--execute"];
-    let prompt = "Start up to 15 minutes of player-work scheduling with no purchases?";
+    const duration = await ask(ns, "Session length in minutes (1–120, default 15)");
+    if (duration === null) return;
+    const minutes = duration ? Number(duration) : 15;
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 120) {
+        ns.tprint("[JIT6] Enter a whole number from 1 to 120.");
+        return;
+    }
+    const args: ScriptArg[] = ["--execute", "--minutes", minutes];
+    let prompt = `Start ${minutes} min of player-work scheduling with no purchases?`;
     if (choice === "Start work with one home upgrade") {
         const cap = await askNonnegative(ns, "Maximum price for one home RAM upgrade (game dollars)");
         if (!cap) return;
@@ -458,94 +410,46 @@ async function jit6Support(ns: NS): Promise<void> {
         if (reserve === null) return;
         const target = ns.getServerMaxRam("home") * 2;
         args.push("--home-target", target, "--home-cap", cap, "--reserve", reserve);
-        prompt = `Allow one upgrade toward ${target} GB, at most $${cap.toLocaleString()}, keeping $${reserve.toLocaleString()} cash?`;
+        prompt = `Start ${minutes} min of work and allow one RAM upgrade to ${target} GB, up to $${cap.toLocaleString()}, keeping $${reserve.toLocaleString()} cash?`;
+    }
+    if (choice === "Start work with an augmentation budget") {
+        const cap = await askNonnegative(ns, "Total augmentation budget for this session (game dollars)");
+        if (!cap) return;
+        const reserve = await askNonnegative(ns, "Minimum cash to keep (game dollars)");
+        if (reserve === null) return;
+        args.push("--augment-cap", cap, "--reserve", reserve);
+        prompt = `Start ${minutes} min of work and allow up to 8 purchases within $${cap.toLocaleString()} total, keeping $${reserve.toLocaleString()} cash?`;
+    }
+    const share = choice.includes("Share");
+    if (share) {
+        args.push("--share");
+        prompt = `Start ${minutes} min of player work and Share when home RAM permits?`;
+    }
+    if (choice.includes("Trader")) {
+        const reserve = await askNonnegative(ns, "Trader cash floor (game dollars)");
+        if (reserve === null) return;
+        if (reserve === 0) {
+            ns.tprint("[JIT6] Enter a positive Trader cash floor.");
+            return;
+        }
+        args.push("--trader", "--reserve", reserve);
+        prompt = `Start ${minutes} min of work${share ? ", Share" : ""} and long-only Trader with a $${reserve.toLocaleString()} cash floor?`;
     }
     if (await ns.prompt(prompt, { type: "boolean" }) === true) launch(ns, JIT6_SUPPORT, args);
 }
 
-async function missionCoordination(ns: NS): Promise<void> {
-    const choice = await choose(ns, "Mission coordination", [
-        "Show capability and RAM status", "Start work-only mission", "Start work and Share", "Start work and Trader",
-    ]);
-    if (choice === "Back") return;
-    if (choice === "Show capability and RAM status") {
-        await launchAndWait(ns, "mission.ts", []);
-        return;
-    }
-    const args: ScriptArg[] = ["--start", "--remember-work"];
-    let summary = "Start 15 minutes of player-work policy? stp-rs can resume work until this session expires.";
-    if (choice === "Start work and Share") {
-        args.push("--share");
-        summary = "Start 15 minutes of work and enable Share if RAM permits? Share runs until stopped.";
-    }
-    if (choice === "Start work and Trader") {
-        const reserve = await askNonnegative(ns, "Trader cash floor (game dollars)");
-        if (reserve === null) return;
-        if (reserve === 0) {
-            ns.tprint("[MISSION] A positive cash floor is required to start Trader.");
-            return;
-        }
-        args.push("--trader", "--reserve", reserve);
-        summary = `Start work and long-only Trader with a $${reserve.toLocaleString()} cash floor? stp halts trading and holds positions.`;
-    }
-    if (await ns.prompt(summary, { type: "boolean" }) !== true) return;
-    await launchAndWait(ns, "mission.ts", args);
-}
-
 async function mission(ns: NS): Promise<void> {
-    const choice = await choose(ns, "BN4 mission", [
+    const choice = await choose(ns, "Progression tools", [
         "Basic snapshot",
-        "Singularity detail",
         "Plan progression",
         "Start faction work",
-        "Preview autopilot",
-        "Start autopilot",
-        "Stop autopilot",
         "Buy one augmentation",
         "Upgrade home RAM",
     ]);
 
     switch (choice) {
-        case "Preview autopilot":
-        case "Start autopilot": {
-            const floor = await askNonnegative(ns, "Cash floor to protect (game dollars)");
-            if (floor === null) return;
-            const budget = await askNonnegative(ns, "Maximum total augmentation spend for this session (0 disables purchases)");
-            if (budget === null) return;
-            const args: ScriptArg[] = ["--reserve", floor, "--budget", budget];
-            if (choice === "Preview autopilot") {
-                await launchAndWait(ns, BT4_AUTO, args);
-                return;
-            }
-            const minutes = await askNonnegative(ns, "Session length in whole minutes (1–120)");
-            if (minutes === null) return;
-            if (!Number.isInteger(minutes) || minutes < 1 || minutes > 120) {
-                ns.tprint("[BT4] Enter a whole number from 1 to 120.");
-                return;
-            }
-            const confirmed = await ns.prompt(
-                `Start BN4 autopilot for ${minutes} min? It will manage its own faction work or free study and may queue up to 8 augmentations within $${budget.toLocaleString()} total, keeping $${floor.toLocaleString()} cash.`,
-                { type: "boolean" },
-            );
-            if (confirmed === true) launch(ns, BT4_AUTO, [...args, "--minutes", minutes, "--execute"]);
-            return;
-        }
-        case "Stop autopilot": {
-            const pilot = ns.ps("home").find(process => process.filename === BT4_AUTO);
-            if (!pilot) {
-                ns.tprint("[BT4] Autopilot is offline.");
-                return;
-            }
-            if (await ns.prompt("Stop BT4 autopilot? Current player work will continue.", { type: "boolean" }) === true) {
-                ns.tprint(ns.kill(pilot.pid) ? "[BT4] Autopilot stopped." : "[BT4] Autopilot already exited.");
-            }
-            return;
-        }
         case "Basic snapshot":
             await launchAndWait(ns, "bt4.ts", ["--dry-run"]);
-            return;
-        case "Singularity detail":
-            await launchAndWait(ns, "bt4-detail.ts", ["--dry-run"]);
             return;
         case "Plan progression": {
             const floor = await askNonnegative(ns, "Cash reserve for planning (game dollars)");
@@ -584,7 +488,7 @@ async function askNonnegative(ns: NS, title: string): Promise<number | null> {
     if (input === null) return null;
     const value = Number(input);
     if (input === "" || !Number.isFinite(value) || value < 0) {
-        ns.tprint("[BT4] Enter a finite, nonnegative number.");
+        ns.tprint("[CONTROL] Enter a finite, nonnegative number.");
         return null;
     }
     return value;
@@ -592,18 +496,16 @@ async function askNonnegative(ns: NS, title: string): Promise<number | null> {
 
 async function capital(ns: NS): Promise<void> {
     const choice = await choose(ns, "Capital management", [
-        "Trader start",
-        "Trader stop",
-        "Trader drain",
+        "Trader hold",
+        "Trader drain and liquidate",
         "Trader status",
         "Fleet planning",
         "Fleet purchase",
     ]);
 
     const commands: Record<string, string> = {
-        "Trader start": "start",
-        "Trader stop": "stop",
-        "Trader drain": "drain",
+        "Trader hold": "stop",
+        "Trader drain and liquidate": "drain",
         "Trader status": "status",
     };
 
@@ -611,7 +513,7 @@ async function capital(ns: NS): Promise<void> {
         await launchAndWait(
             ns,
             "traderctl.ts",
-            [commands[choice]]
+            choice === "Trader hold" ? ["stop", "--hold"] : choice === "Trader drain and liquidate" ? ["drain", "--no-start"] : [commands[choice]]
         );
 
         return;
@@ -657,19 +559,9 @@ async function capital(ns: NS): Promise<void> {
 
 async function services(ns: NS): Promise<void> {
     const choice = await choose(ns, "System services", [
-        "Start progression",
-        "Start share manager",
         "Start network monitor",
         "Show home tools and RAM costs",
     ]);
-
-    if (choice === "Start progression") {
-        launch(ns, "progression.ts", []);
-    }
-
-    if (choice === "Start share manager") {
-        launch(ns, "share.ts", []);
-    }
 
     if (choice === "Start network monitor") {
         launch(ns, "netmon.ts", []);
@@ -684,7 +576,7 @@ async function universalLauncher(ns: NS): Promise<void> {
     const files = ns.ls("home")
         .filter(file => /\.[jt]s$/.test(file))
         .filter(file => !file.endsWith(".d.ts"))
-        .filter(file => file !== "ap.ts")
+        .filter(file => file !== "ap.ts" && !AP_BLOCKED_STARTS.has(file))
         .sort();
 
     const script = await choose(
@@ -787,7 +679,7 @@ async function processes(ns: NS): Promise<void> {
 
     if (
         FARM.has(process.filename) ||
-        ["daemon.ts", "bootstrap.ts"].includes(
+        ["daemon.ts", "bootstrap.ts", "progression.ts"].includes(
             process.filename
         )
     ) {
@@ -797,15 +689,6 @@ async function processes(ns: NS): Promise<void> {
 
     if (process.filename === "trader.ts") {
         ns.tprint("[CONTROL] Use Trader stop/drain.");
-        return;
-    }
-
-    if (
-        process.filename === "progression.ts" &&
-        engineMode(ns) !== "manual" &&
-        ns.ps("home").some(p => p.filename === "daemon.ts")
-    ) {
-        ns.tprint("[CONTROL] Use Shutdown OS.");
         return;
     }
 
@@ -835,89 +718,23 @@ function launch(
 
     const running = ns.ps("home");
 
-    const daemonOnline = running.some(
-        p => p.filename === "daemon.ts"
-    );
-
-    const manual = engineMode(ns) === "manual";
-
-    if (script === "trader.ts") {
-        ns.tprint("[CONTROL] Use traderctl.ts start.");
+    const activeJit6 = running.some(p => p.filename === JIT6_SUPPORT && p.args.includes("--execute"));
+    if (AP_BLOCKED_STARTS.has(script) || (script === "traderctl.ts" && String(args[0]).toLowerCase() === "start")) {
+        ns.tprint("[CONTROL] Use JIT6 sessions to start managed services.");
+        return 0;
+    }
+    if (activeJit6 && ((script === JIT6_SUPPORT && args.includes("--execute")) || script === "bt4-action.ts" ||
+        (script === "fleet.ts" && args.includes("--execute")))) {
+        ns.tprint("[CONTROL] Finish the active JIT6 session before starting overlapping work or purchases.");
+        return 0;
+    }
+    if (script === "bt4-action.ts" && running.some(p => [BT4_AUTO, "bt4-action.ts", "mission.ts", "mission-study.ts"].includes(p.filename))) {
+        ns.tprint("[CONTROL] Another player-work tool is active.");
         return 0;
     }
 
-    if (FARM.has(script)) {
-        if (ns.fileExists(PAUSE_FILE, "home")) {
-            ns.tprint(
-                "[CONTROL] OS paused. Select MANUAL and resume."
-            );
-            return 0;
-        }
-
-        if (daemonOnline && !manual) {
-            ns.tprint(
-                "[CONTROL] AUTO/EARLY policy owns production. " +
-                "Pause, select MANUAL, then resume."
-            );
-            return 0;
-        }
-
-        const active = running.some(
-            p => ENGINES.includes(p.filename)
-        );
-
-        if (active) {
-            ns.tprint(
-                "[CONTROL] A production engine is already active."
-            );
-            return 0;
-        }
-
-        if (
-            ENGINES.includes(script) &&
-            running.some(p => FARM.has(p.filename))
-        ) {
-            ns.tprint(
-                "[CONTROL] Stop existing workers/services first."
-            );
-            return 0;
-        }
-    }
-
-    if (script === "progression.ts") {
-        const reset = ns.getResetInfo();
-
-        if (
-            reset.currentNode !== 4 &&
-            (reset.ownedSF.get(4) ?? 0) === 0
-        ) {
-            ns.tprint("[CONTROL] Singularity is locked.");
-            return 0;
-        }
-
-        if (
-            daemonOnline && !manual ||
-            running.some(p => p.filename === "findV2.ts")
-        ) {
-            ns.tprint(
-                "[CONTROL] Use MANUAL policy; finish FindV2 first."
-            );
-            return 0;
-        }
-    }
-
-    const singleton = [
-        ...ENGINES,
-        "bootstrap.ts",
-        "daemon.ts",
-        "progression.ts",
-        "share.ts",
-        "netmon.ts",
-        "findV2.ts",
-    ];
-
     if (
-        singleton.includes(script) &&
+        ["netmon.ts", "findV2.ts"].includes(script) &&
         running.some(p => p.filename === script)
     ) {
         ns.tprint(`[CONTROL] ${script} already running`);
@@ -943,31 +760,21 @@ function launch(
         return 0;
     }
 
-    if (MISSION_TOOLS.has(script)) {
-        if (script !== "bt4.ts" && script !== "mission.ts" && script !== JIT6_SUPPORT) {
-            const reset = ns.getResetInfo();
-            if (reset.currentNode !== 4 && (reset.ownedSF.get(4) ?? 0) === 0) {
-                ns.tprint("[BT4] Singularity unavailable; select Basic snapshot.");
-                return 0;
-            }
-            if (script === "bt4-detail.ts" && !ns.fileExists("bt4.ts", "home")) {
-                ns.tprint("[BT4] Missing dependency bt4.ts.");
-                return 0;
-            }
-        }
-        if (script === BT4_AUTO && !ns.fileExists("bt4-plan.ts", "home")) {
-            ns.tprint("[BT4] Autopilot needs bt4-plan.ts.");
+    if (["bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts"].includes(script)) {
+        const reset = ns.getResetInfo();
+        if (reset.currentNode !== 4 && (reset.ownedSF.get(4) ?? 0) === 0) {
+            ns.tprint("[BT4] Singularity unavailable. Select Basic snapshot.");
             return 0;
         }
+        if (script === "bt4-detail.ts" && !ns.fileExists("bt4.ts", "home")) {
+            ns.tprint("[BT4] Missing dependency bt4.ts.");
+            return 0;
+        }
+    }
+    if (script === "bt4-action.ts" || (script === JIT6_SUPPORT && args.includes("--execute"))) {
         const reserve = ns.getScriptRam("stopfarm.ts", "home");
         if (reserve <= 0 || free - required < reserve) {
-            ns.tprint(`[BT4] Admission refused: required=${required.toFixed(2)} GB, free=${free.toFixed(2)} GB, emergency=${reserve.toFixed(2)} GB. Missing/invalid stopfarm.ts also blocks admission.`);
-            return 0;
-        }
-        if (script !== JIT6_SUPPORT && running.some(p => MISSION_TOOLS.has(p.filename) &&
-            (p.filename !== BT4_AUTO || script === BT4_AUTO || script === "bt4-action.ts") &&
-            (p.filename !== JIT6_SUPPORT || script === BT4_AUTO || script === "bt4-action.ts"))) {
-            ns.tprint("[BT4] A mission tool is already running.");
+            ns.tprint(`[JIT6] Admission refused. Required ${required.toFixed(2)} GB, free ${free.toFixed(2)} GB, emergency reserve ${reserve.toFixed(2)} GB. Check stopfarm.ts and home RAM.`);
             return 0;
         }
     }
@@ -987,14 +794,15 @@ async function launchAndWait(
     ns: NS,
     script: string,
     args: ScriptArg[]
-): Promise<void> {
+): Promise<boolean> {
     const pid = launch(ns, script, args);
 
-    if (!pid) return;
+    if (!pid) return false;
 
     while (ns.isRunning(pid)) {
         await ns.sleep(200);
     }
+    return true;
 }
 
 function showTools(ns: NS): void {

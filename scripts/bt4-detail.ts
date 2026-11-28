@@ -46,8 +46,9 @@ export function collectDetail(ns: NS) {
         ? { status: "KNOWN", value: queuedOnly(installed.value, purchased.value) }
         : { status: "UNKNOWN", reason: "Installed or purchased augmentation observation failed" };
     const work = observe(() => ns.singularity.getCurrentWork());
-    const requirements = observe(() => ns.singularity.getFactionInviteRequirements("Daedalus"));
-    const readiness = requirements.status === "KNOWN" && installed.status === "KNOWN"
+    const alternateRedPill = base.reset.currentNode === 15;
+    const requirements = alternateRedPill ? null : observe(() => ns.singularity.getFactionInviteRequirements("Daedalus"));
+    const readiness = requirements?.status === "KNOWN" && installed.status === "KNOWN"
         ? requirements.value.map(requirement => ({ requirement, result: evaluateRequirement(requirement, base.player, installed.value.length) })) : null;
     const factions = base.player.factions.map(name => ({ name,
         reputation: observe(() => ns.singularity.getFactionRep(name)), favor: observe(() => ns.singularity.getFactionFavor(name)),
@@ -58,18 +59,19 @@ export function collectDetail(ns: NS) {
         reputationRequired: observe(() => ns.singularity.getAugmentationRepReq(name)),
         currentPrice: observe(() => ns.singularity.getAugmentationPrice(name)) }));
     const recommendations: string[] = [];
-    if (readiness === null) recommendations.push("UNKNOWN Daedalus readiness: recover missing requirement/augmentation observations.");
+    if (alternateRedPill) recommendations.push("BN15 uses the alternate Red Pill route. Check the current objective in the game UI.");
+    else if (readiness === null) recommendations.push("UNKNOWN Daedalus readiness: recover missing requirement/augmentation observations.");
     else if (!base.player.factions.includes("Daedalus")) {
         for (const item of readiness.filter(r => r.result !== "MET")) {
             recommendations.push(`${item.result}: Daedalus ${JSON.stringify(item.requirement)}. Review this prerequisite before choosing work or purchases.`);
         }
         if (readiness.every(r => r.result === "MET")) recommendations.push("Observed Daedalus requirements met; inspect the faction UI for an invitation. No invitation was triggered or accepted.");
     } else recommendations.push("Daedalus membership observed: review reputation, The Red Pill ownership and live World Daemon threshold.");
-    if (queued.status === "KNOWN" && queued.value && queued.value.length > 0) recommendations.push("Queued augmentations observed: review reset value manually; no install or reset is authorized by this report.");
+    if (queued.status === "KNOWN" && queued.value && queued.value.length > 0) recommendations.push("Review the queued augmentations and reset preview in the game UI.");
     return { ...base, unknowns: base.unknowns.filter(s => !s.startsWith("Queued augmentations")), detail: {
         status: "OBSERVED (inspect each field for UNKNOWN)", currentWork: work, installed, purchased, queued,
-        factions, augmentations, daedalus: { requirements, readiness, member: base.player.factions.includes("Daedalus"),
-            note: "Uses live requirement tree; installed count excludes queued purchases. Not a mission completion percentage." },
+        factions, augmentations, daedalus: alternateRedPill ? null : { requirements, readiness, member: base.player.factions.includes("Daedalus"),
+            note: "Installed count is based on active augmentations. Each requirement is evaluated independently." },
         recommendations, actionOwnership: "UNKNOWN: observation never acquires or replaces player work",
     } };
 }

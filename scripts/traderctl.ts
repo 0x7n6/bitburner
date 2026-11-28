@@ -17,6 +17,7 @@ export async function main(
         ns.flags([
             ["tail", false],
             ["hold", false],
+            ["no-start", false],
         ]);
 
     ns.disableLog("ALL");
@@ -50,7 +51,8 @@ export async function main(
 
         case "drain":
             await drainTrader(
-                ns
+                ns,
+                flags["no-start"] !== true
             );
             return;
 
@@ -249,7 +251,8 @@ function stopTrader(
 
 
 async function drainTrader(
-    ns: NS
+    ns: NS,
+    startIfOffline: boolean
 ): Promise<void> {
     /*
      * Drain is different from stop:
@@ -293,7 +296,7 @@ async function drainTrader(
         );
 
     if (
-        !existing &&
+        !existing && startIfOffline &&
         ns.fileExists(
             TRADER,
             "home"

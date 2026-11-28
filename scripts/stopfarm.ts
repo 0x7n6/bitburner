@@ -11,6 +11,8 @@ const DAEMON =
 const BOOTSTRAP =
     "bootstrap.ts";
 
+const JIT6 = "jit6.ts";
+
 export async function main(
     ns: NS
 ): Promise<void> {
@@ -25,12 +27,12 @@ export async function main(
         ]);
 
     if (flags["support-only"]) {
-        if (flags.resume && !flags.os) resumeSupportOnly(ns);
+        if (flags.resume && !flags.os) await resumeJit6(ns, false);
         else ns.tprint("Use --resume --support-only to resume support work.");
         return;
     }
     if (flags.resume) {
-        await resumeOS(ns);
+        await resumeJit6(ns, true);
         return;
     }
 
@@ -192,92 +194,45 @@ export async function main(
         ns.tprint(`Stopped by script: ${[...counts].map(([file, count]) => `${file}=${count}`).join(", ")}`);
     }
     ns.tprint("Player activity continues. Mission Trader positions are held.");
-    ns.tprint("Only an unexpired player-work policy can be resumed.");
-
-    ns.tprint(
-        "Resume with: run stopfarm.ts --resume"
-    );
+    ns.tprint("Resume with a new work-only JIT6 session: run stopfarm.ts --resume");
 }
 
-
-function resumeSupportOnly(ns: NS): void {
-    if (ns.ps("home").some(p => p.filename === DAEMON || p.filename === BOOTSTRAP)) {
-        ns.tprint("[JIT6 SUPPORT] A supervisor is running. Support-only resume needs it offline.");
+async function resumeJit6(ns: NS, launchSession: boolean): Promise<void> {
+    if (ns.getHostname() !== "home") {
+        ns.tprint("[JIT6] Run resume on home.");
         return;
     }
-    if (ns.fileExists(PAUSE_FILE, "home")) ns.rm(PAUSE_FILE, "home");
-    ns.tprint("[JIT6 SUPPORT] Support unpaused. Use AP to start a new support session.");
-}
-
-async function resumeOS(
-    ns: NS
-): Promise<void> {
+    const running = ns.ps("home");
+    if (running.some(p => p.filename === DAEMON || p.filename === BOOTSTRAP)) {
+        ns.tprint("[JIT6] Legacy supervisor is running. Use Shutdown OS once, then resume JIT6.");
+        return;
+    }
+    const current = running.find(p => p.filename === JIT6 && p.args.includes("--execute"));
+    if (launchSession && !current) {
+        const cost = ns.getScriptRam(JIT6, "home");
+        const free = ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
+        if (!(cost > 0) || free < cost) {
+            ns.tprint(`[JIT6] Resume blocked. Check jit6.ts and home RAM (${free.toFixed(2)} GB free).`);
+            return;
+        }
+    }
     const wasPaused = ns.fileExists(PAUSE_FILE, "home");
-    if (wasPaused) ns.rm(PAUSE_FILE, "home");
-
-    const daemonRunning =
-        ns.ps("home")
-            .some(
-                process =>
-                    process.filename ===
-                    DAEMON
-            );
-
-    if (daemonRunning) {
-        ns.tprint(
-            "7n8 OS RESUMED | daemon already online"
-        );
-        if (wasPaused) resumeMission(ns);
+    const pauseValue = wasPaused ? ns.read(PAUSE_FILE) : "";
+    if (wasPaused && !ns.rm(PAUSE_FILE, "home")) {
+        ns.tprint("[JIT6] Could not clear the pause marker.");
         return;
     }
-
-    if (
-        !ns.fileExists(
-            BOOTSTRAP,
-            "home"
-        )
-    ) {
-        ns.tprint(
-            `RESUME ERROR: missing ${BOOTSTRAP}`
-        );
-
+    if (!launchSession || current) {
+        ns.tprint(current ? `[JIT6] OS resumed. Work session already running (PID ${current.pid}).` :
+            "[JIT6] OS unpaused. Start a session from AP when ready.");
         return;
     }
-
-    const pid =
-        ns.exec(
-            BOOTSTRAP,
-            "home",
-            1
-        );
-
-    if (!pid) {
-        ns.tprint(
-            "RESUME ERROR: failed to start bootstrap"
-        );
-
-        return;
-    }
-
-    ns.tprint(
-        `7n8 OS RESUMING | bootstrap PID ${pid}`
-    );
-
-    await ns.sleep(100);
-    if (wasPaused) resumeMission(ns);
-}
-
-function resumeMission(ns: NS): void {
-    if (!ns.fileExists(WORK_POLICY, "home")) return;
-    const ram = ns.getScriptRam("mission.ts", "home");
-    const emergency = ns.getScriptRam("stopfarm.ts", "home");
-    const free = ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
-    if (!(ram > 0) || !(emergency > 0) || free - ram < emergency) {
-        ns.tprint("[MISSION] Resume deferred. Try Mission coordination once RAM is available.");
-        return;
-    }
-    if (!ns.exec("mission.ts", "home", 1, "--resume")) {
-        ns.tprint("[MISSION] Resume launch rejected.");
+    const pid = ns.exec(JIT6, "home", { threads: 1, preventDuplicates: true }, "--execute");
+    if (pid) {
+        ns.tprint(`[JIT6] OS resumed. New work-only session (PID ${pid}).`);
+    } else {
+        if (wasPaused && !ns.fileExists(PAUSE_FILE, "home")) await ns.write(PAUSE_FILE, pauseValue, "w");
+        ns.tprint("[JIT6] Resume launch rejected. Check free home RAM and retry.");
     }
 }
 

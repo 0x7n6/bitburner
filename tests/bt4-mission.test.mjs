@@ -12,7 +12,7 @@ function fixture(flags = {}) {
         maxRam: 128, used: 25, work: null, launched: [], killed: [], logs: [],
         ram: {
             "stopfarm.ts": 6, "bt4-auto.ts": 41.15, "mission-study.ts": 5,
-            "share.ts": 4, "share-worker.ts": 4, "trader.ts": 32, "mission.ts": 4,
+            "share.ts": 4, "share-worker.ts": 4, "trader.ts": 32, "mission.ts": 4, "jit6.ts": 7,
         },
         processes: [], courses: [],
     };
@@ -146,14 +146,32 @@ test("stp stops mission Trader only, holding positions and preserving resume pol
     assert.equal(state.files.has(".7n8-pause.txt"), true);
 });
 
-test("stp-rs requests saved mission admission only after an actual pause", async () => {
+test("stp-rs starts only JIT6 after a legacy supervisor stops", async () => {
     const { ns, state } = fixture({ resume: true });
     state.processes = [{ filename: "daemon.ts", pid: 1, args: [] }];
     state.files.set(".7n8-mission-work.txt", "4,2,3,600000");
     state.files.set(".7n8-pause.txt", "1");
     await stopfarm(ns);
-    assert.deepEqual(state.launched, [["mission.ts", "home", 1, "--resume"]]);
+    assert.deepEqual(state.launched, []);
+    assert.equal(state.files.has(".7n8-pause.txt"), true);
+    state.processes = [];
+    await stopfarm(ns);
+    assert.deepEqual(state.launched, [["jit6.ts", "home", { threads: 1, preventDuplicates: true }, "--execute"]]);
     assert.equal(state.files.has(".7n8-pause.txt"), false);
+    state.processes = [{ filename: "jit6.ts", pid: 31, args: ["--execute"] }];
     await stopfarm(ns);
     assert.equal(state.launched.length, 1);
+});
+
+test("stp-rs preserves the pause when JIT6 cannot be launched", async () => {
+    const { ns, state } = fixture({ resume: true });
+    state.files.set(".7n8-pause.txt", "original pause");
+    state.ram["jit6.ts"] = 0;
+    await stopfarm(ns);
+    assert.deepEqual(state.launched, []);
+    assert.equal(state.files.get(".7n8-pause.txt"), "original pause");
+    state.ram["jit6.ts"] = 7;
+    ns.exec = () => 0;
+    await stopfarm(ns);
+    assert.equal(state.files.get(".7n8-pause.txt"), "original pause");
 });
