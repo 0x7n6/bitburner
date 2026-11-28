@@ -173,7 +173,7 @@ test("stp-rs starts only JIT6 after a legacy supervisor stops", async () => {
     assert.equal(state.files.has(".7n8-pause.txt"), true);
     state.processes = [];
     await stopfarm(ns);
-    assert.deepEqual(state.launched, [["jit6.ts", "home", { threads: 1, preventDuplicates: true }, "--execute"]]);
+    assert.deepEqual(state.launched, [["jit6.ts", "home", { threads: 1, preventDuplicates: true }, "--execute", "--continuous"]]);
     assert.equal(state.files.has(".7n8-pause.txt"), false);
     state.processes = [{ filename: "jit6.ts", pid: 31, args: ["--execute"] }];
     await stopfarm(ns);
@@ -191,6 +191,29 @@ test("stp-rs preserves the pause when JIT6 cannot be launched", async () => {
     ns.exec = () => 0;
     await stopfarm(ns);
     assert.equal(state.files.get(".7n8-pause.txt"), "original pause");
+});
+
+test("resume keeps the pause on unsupported builds or without Singularity", async () => {
+    const { ns, state } = fixture({ resume: true });
+    state.files.set(".7n8-pause.txt", "original pause");
+    const supported = ns.ui.getGameInfo;
+    ns.ui.getGameInfo = () => ({ version: "3.0.1", commit: "fffffff" });
+    await stopfarm(ns);
+    assert.match(state.logs.at(-1), /requires Bitburner 3\.0\.1 \(3162fd2\)/);
+    assert.equal(state.files.get(".7n8-pause.txt"), "original pause");
+    assert.deepEqual(state.launched, []);
+
+    ns.ui.getGameInfo = supported;
+    state.node = 1;
+    await stopfarm(ns);
+    assert.match(state.logs.at(-1), /Singularity is locked/);
+    assert.equal(state.files.get(".7n8-pause.txt"), "original pause");
+    assert.deepEqual(state.launched, []);
+
+    ns.flags = () => ({ resume: true, "support-only": true });
+    await stopfarm(ns);
+    assert.equal(state.files.has(".7n8-pause.txt"), false);
+    assert.deepEqual(state.launched, []);
 });
 
 test("stopfarm rejects remote execution and conflicting lifecycle flags before changing state", async () => {

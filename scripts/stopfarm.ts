@@ -214,6 +214,16 @@ async function resumeJit6(ns: NS, launchSession: boolean): Promise<void> {
     }
     const current = running.find(p => p.filename === JIT6 && p.args.includes("--execute"));
     if (launchSession && !current) {
+        const game = ns.ui.getGameInfo();
+        if (game.version !== "3.0.1" || !game.commit.startsWith("3162fd2")) {
+            ns.tprint("[JIT6] Resume requires Bitburner 3.0.1 (3162fd2).");
+            return;
+        }
+        const reset = ns.getResetInfo();
+        if (reset.currentNode !== 4 && !(reset.ownedSF.get(4) ?? 0)) {
+            ns.tprint("[JIT6] Singularity is locked. Use the game UI for player work.");
+            return;
+        }
         const cost = ns.getScriptRam(JIT6, "home");
         const free = ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
         if (!(cost > 0) || free < cost) {
@@ -232,9 +242,9 @@ async function resumeJit6(ns: NS, launchSession: boolean): Promise<void> {
             "[JIT6] OS unpaused. Start a session from AP when ready.");
         return;
     }
-    const pid = ns.exec(JIT6, "home", { threads: 1, preventDuplicates: true }, "--execute");
+    const pid = ns.exec(JIT6, "home", { threads: 1, preventDuplicates: true }, "--execute", "--continuous");
     if (pid) {
-        ns.tprint(`[JIT6] OS resumed. New work-only session (PID ${pid}).`);
+        ns.tprint(`[JIT6] OS resumed. Continuous work-only session (PID ${pid}).`);
     } else {
         if (wasPaused && !ns.fileExists(PAUSE_FILE, "home")) await ns.write(PAUSE_FILE, pauseValue, "w");
         ns.tprint("[JIT6] Resume launch rejected. Check free home RAM and retry.");

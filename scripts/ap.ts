@@ -383,13 +383,19 @@ async function network(ns: NS): Promise<void> {
 
 async function jit6Support(ns: NS): Promise<void> {
     const choice = await choose(ns, "JIT6 sessions", [
-        "Preview admission", "Start work session", "Start work with an augmentation budget",
+        "Preview admission", "Start continuous work", "Start work session", "Start work with an augmentation budget",
         "Start work with one home upgrade", "Start work and Share", "Start work and Trader",
         "Start work with Share and Trader", "Stop JIT6 session",
     ]);
     if (choice === "Back") return;
     if (choice === "Preview admission") {
         await launchAndWait(ns, JIT6_SUPPORT, []);
+        return;
+    }
+    if (choice === "Start continuous work") {
+        if (await ns.prompt("Start continuous work and free study? JIT6 may switch a university course.", { type: "boolean" }) === true) {
+            launch(ns, JIT6_SUPPORT, ["--execute", "--continuous"]);
+        }
         return;
     }
     if (choice === "Stop JIT6 session") {
@@ -453,6 +459,7 @@ async function mission(ns: NS): Promise<void> {
         "Basic snapshot",
         "Plan progression",
         "Rank faction invitations",
+        "Accept a faction invitation",
         "Start faction work",
         "Buy one augmentation",
         "Upgrade home RAM",
@@ -470,6 +477,17 @@ async function mission(ns: NS): Promise<void> {
         case "Rank faction invitations": {
             const floor = await askNonnegative(ns, "Cash reserve for ranking (game dollars)");
             if (floor !== null) await launchAndWait(ns, "jit6-invitations.ts", ["--reserve", floor]);
+            return;
+        }
+        case "Accept a faction invitation": {
+            const input = await ask(ns, "Faction name from Rank faction invitations");
+            if (input === null) return;
+            const faction = findFaction(input);
+            if (!faction) {
+                ns.tprint("[JIT6] Enter a faction name from the invitation ranking.");
+                return;
+            }
+            await launchAndWait(ns, "jit6-join.ts", [faction]);
             return;
         }
         case "Start faction work": {

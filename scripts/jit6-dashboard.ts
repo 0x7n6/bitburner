@@ -56,6 +56,7 @@ export async function main(ns: NS): Promise<void> {
     if (!matched) show("Catalog is pinned to 3.0.1 (3162fd2); verify version-specific guidance in the current UI.");
     show(`Home: ${free.toFixed(2)}/${home.maxRam} GB free | Emergency: ${emergency > 0 ? `${emergency.toFixed(2)} GB` : "unavailable"} | OS: ${paused ? "PAUSED" : "unpaused"}`);
     show(`Home services: ${normal || "none of the tracked services"}`);
+    if (session) show(`Work session: ${session.args.includes("--continuous") ? "continuous" : "timed"}.`);
     if (session) {
         for (const line of ns.getScriptLogs(session.pid).filter(log => log.startsWith("[JIT6 SUPPORT]")).slice(-3)) show(line);
     }

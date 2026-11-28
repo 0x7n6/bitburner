@@ -9,13 +9,14 @@ quotes and prerequisites when Singularity is available. The multiplier view
 requires BN5 or active SF5.
 
 **JIT6 sessions** runs on `home`. The scheduler rechecks the reset generation,
-measured RAM, and spending conflicts during a bounded session. Player work
+measured RAM, and spending conflicts. Player work
 requires BN4 or active SF4. The lightweight worker can start free Computer
 Science when the full pilot does not fit and the purchase budget is zero.
 
 | Session option | Behavior |
 | --- | --- |
 | Preview admission | Reports the next work or home-upgrade decision without launching a task |
+| Start continuous work | Runs faction work or free study without a timer or purchase budget |
 | Start work session | Runs faction work or free study within the requested duration |
 | Work with an augmentation budget | Queues eligible augmentations within the total budget and cash floor, even if existing player work is still active |
 | Work with one home upgrade | Checks the current RAM upgrade quote against the approved price and cash floor |
@@ -27,9 +28,10 @@ directly to eligible faction work or free Computer Science. If the active
 course is already the selected free class, the full pilot uses it as its
 current activity and keeps checking for faction work. Leaving a class in
 place after a rejected replacement preserves the player's current activity.
-Other activities at startup and manual changes during the session end the
-work pilot with a reason. With
-Formulas.exe, the pilot uses the current player and faction favor to find the
+On a new session, the pilot can resume faction work when its faction and
+work type match the current plan. Manual changes after the pilot takes
+ownership end the pilot with a reason. With Formulas.exe, the pilot uses the
+current player and faction favor to find the
 quickest useful reputation unlock when starting a new goal. The Red Pill
 takes priority on the standard route. BN15 has a different source for it.
 
@@ -49,7 +51,10 @@ node's completion route. On the standard route, track Daedalus cash, installed
 augmentations, skills and the Red Pill separately. Use **Progression tools →
 Rank faction invitations** to compare open invitations that would add
 progression offers within the chosen cash reserve. This refreshes the game's
-invitations and highlights incompatible city factions before joining.
+invitations and highlights incompatible city factions before joining. In
+**Accept a faction invitation**, the confirmation lists any exclusions using
+the current save. The action rechecks the invitation and reset generation
+after confirmation.
 
 In a budgeted session, JIT6 can move a pricier ready augmentation ahead of a
 cheaper preferred upgrade when the budget, cash floor and remaining purchase
@@ -61,8 +66,11 @@ home RAM demand rises, managed Share releases threads to restore headroom.
 A combined session also accounts for a pending Trader launch. Trader runs in
 a session without an augmentation or home-upgrade budget. `stp` ends JIT6 and
 its services while preserving player activity and holding Trader positions.
-`stp-rs` starts a fresh 15-minute work-only session. Use `stp-os` to stop a
-running legacy supervisor before resuming JIT6.
+`stp-rs` starts continuous work and free study with a zero purchase budget.
+When RAM only fits the lightweight study check, the scheduler starts it once
+and promotes to the full pilot when RAM becomes available. Use `stp-os` to
+stop a running legacy supervisor before resuming JIT6. Timed AP sessions are
+available for purchases, Share, and Trader.
 
 **Augmentation reset readiness** lists the observed queue, installed Red Pill
 status and active services. An augmentation installation in the same BitNode
@@ -74,8 +82,9 @@ new BitNode.
 
 1. Sync `scripts/` and reopen AP. Check the current BitNode, Source-Files,
    active process names and free RAM under **JIT6 dashboard**.
-2. Start a work-only session while studying. Verify that JIT6 reports reusing
-   the chosen course or switching to the eligible replacement.
+2. Start continuous work while studying. Verify that the dashboard shows the
+   policy and reports reusing the chosen course or switching to the eligible
+   replacement. Use `stp` to stop scheduler control and `stp-rs` to resume.
 3. Try Share on a controlled save. Compare free RAM with the measured cost
    of `stopfarm.ts`, `ap.ts`, and `jit6-dashboard.ts`. Start and stop Trader in
    a separate controlled session and confirm the in-game cash floor.

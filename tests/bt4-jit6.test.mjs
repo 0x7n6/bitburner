@@ -124,6 +124,37 @@ test("waits until RAM frees, then launches full work against the original deadli
     assert.match(state.logs[0], /No ready tool fits/);
 });
 
+test("continuous work checks study once and promotes after home RAM becomes available", async context => {
+    const { ns, state } = fixture(context, { continuous: true });
+    state.used = 110;
+    let ticks = 0;
+    state.onSleep = () => {
+        ticks++;
+        if (ticks === 1) {
+            state.processes = [];
+            state.now += 121 * 60_000;
+        }
+        if (ticks === 3) state.used = 32;
+        if (ticks === 4) state.augReset++;
+    };
+    await schedule(ns);
+    assert.deepEqual(state.launches.map(job => job.name), ["mission-study.ts", "bt4-auto.ts"]);
+    assert.deepEqual(state.launches[1].args, ["--execute", "--continuous", "--replace-study", "--reserve", 0, "--budget", 0]);
+    assert.ok(state.logs.some(log => /Watching RAM/.test(log)));
+    assert.match(state.logs.at(-1), /Reset changed/);
+    state.exit();
+    assert.deepEqual(state.killed, [501]);
+});
+
+test("continuous scheduler refuses purchase budgets and timed optional services", async context => {
+    for (const flags of [{ "augment-cap": 100 }, { share: true }, { trader: true, reserve: 500 }]) {
+        const { ns, state } = fixture(context, { continuous: true, ...flags });
+        await schedule(ns);
+        assert.deepEqual(state.launches, []);
+        assert.match(state.logs.at(-1), /Continuous mode supports work and free study only/);
+    }
+});
+
 test("one authorized upgrade is attempted before work, without repeating on refusal", async context => {
     const { ns, state } = fixture(context, { "home-target": 256, "home-cap": 300, reserve: 500 });
     state.onSleep = () => { state.processes = []; };

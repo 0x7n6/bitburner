@@ -62,9 +62,10 @@ export async function main(ns: NS): Promise<void> {
     ns.disableLog("ALL");
     const flags = ns.flags([
         ["execute", false], ["minutes", 15], ["home-target", 0], ["home-cap", 0], ["reserve", 0],
-        ["augment-cap", 0], ["share", false], ["trader", false],
+        ["augment-cap", 0], ["share", false], ["trader", false], ["continuous", false],
     ]);
     const execute = flags.execute === true;
+    const continuous = flags.continuous === true;
     const minutes = Number(flags.minutes);
     const target = Number(flags["home-target"]);
     const cap = Number(flags["home-cap"]);
@@ -90,6 +91,10 @@ export async function main(ns: NS): Promise<void> {
         report("Trader needs a positive cash reserve and a session without purchase budgets.");
         return;
     }
+    if (continuous && (cap > 0 || augmentCap > 0 || optional.length)) {
+        report("Continuous mode supports work and free study only. Use a timed session for purchases, Share or Trader.");
+        return;
+    }
     const game = ns.ui.getGameInfo();
     if (ns.getHostname() !== "home" || game.version !== "3.0.1" || !game.commit.startsWith("3162fd2")) {
         report("Requires home and Bitburner 3.0.1 (3162fd2).");
@@ -97,7 +102,7 @@ export async function main(ns: NS): Promise<void> {
     }
 
     const reset = ns.getResetInfo();
-    const deadline = Date.now() + minutes * 60_000;
+    const deadline = continuous ? Infinity : Date.now() + minutes * 60_000;
     const available = reset.currentNode === 4 || (reset.ownedSF.get(4) ?? 0) > 0;
     let upgradeAttempted = false;
     let ownedPid = 0;
@@ -106,6 +111,7 @@ export async function main(ns: NS): Promise<void> {
     let launchRejections = 0;
     let lastReason = "";
     let workFinished = false;
+    let studyChecked = false;
     const servicePids = new Map<Service, number>();
     const serviceReasons = new Map<Service, string>();
     const disabledAtStart = optional.includes(TRADER) && ns.fileExists(TRADER_DISABLED, "home") ? ns.read(TRADER_DISABLED) : null;
@@ -155,6 +161,7 @@ export async function main(ns: NS): Promise<void> {
                 .map(p => `${p.filename} PID ${p.pid}`).join(", ");
             report(`Preview | legacy engine=${legacyEngine || "none on home"} | home=${homeRam} GB | free=${free.toFixed(2)} GB | emergency=${emergency.toFixed(2)} GB.`);
             report(`Next: ${plan.job ?? "wait"} | ${plan.reason}`);
+            if (continuous) report("Policy: continuous player work and free study.");
             if (plan.job === FULL || plan.job === STUDY) report("Scheduled player work can replace an ongoing university course.");
             if (optional.length) report(`Requested services: ${optional.join(", ")}. Session admission checks live availability and reserve.`);
             return;
@@ -169,6 +176,9 @@ export async function main(ns: NS): Promise<void> {
             if (ownedJob === UPGRADE) {
                 report(`Upgrade attempt ended. Home RAM: ${homeBeforeUpgrade} → ${homeRam} GB. See [JIT6 HOME] for the outcome.`);
                 ownedJob = null;
+            } else if (continuous && ownedJob === STUDY) {
+                studyChecked = true;
+                ownedJob = null;
             } else {
                 report("Work tool exited. Any player activity it started remains active.");
                 if (!optional.length) return;
@@ -178,13 +188,17 @@ export async function main(ns: NS): Promise<void> {
         }
 
         if (!ownedPid && !workFinished) {
-            const decision = planAdmission(snapshot, target, upgradeAttempted, augmentCap);
+            const admission = planAdmission(snapshot, target, upgradeAttempted, augmentCap);
+            const decision = studyChecked && admission.job === STUDY
+                ? { job: null, reason: "Study check finished. Watching RAM for the full progression pilot." }
+                : admission;
             if (decision.reason !== lastReason) report(decision.reason);
             lastReason = decision.reason;
             if (decision.job) {
                 const job = decision.job;
                 const args = job === FULL
-                    ? ["--execute", "--minutes", minutes, "--deadline", deadline, "--replace-study", "--reserve", reserve, "--budget", augmentCap]
+                    ? ["--execute", ...(continuous ? ["--continuous"] : ["--minutes", minutes, "--deadline", deadline]),
+                        "--replace-study", "--reserve", reserve, "--budget", augmentCap]
                     : job === UPGRADE
                         ? [cap, reserve, target, deadline, reset.currentNode, reset.lastNodeReset, reset.lastAugReset]
                         : ["--replace-study"];

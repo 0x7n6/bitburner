@@ -117,6 +117,37 @@ test("managed pilot leaves non-university activity and rejected replacements alo
     assert.deepEqual(state.events, []);
 });
 
+test("managed start resumes matching faction work and yields after manual takeover", async context => {
+    const { ns, state } = fixture({ "replace-study": true, continuous: true });
+    let now = 0;
+    context.mock.method(Date, "now", () => now);
+    const original = { type: "FACTION", factionName: "CyberSec", factionWorkType: "hacking", nextCompletion: token() };
+    const manual = { ...original, nextCompletion: token() };
+    state.work = original;
+    state.onTick = tick => {
+        now += 121 * 60_000;
+        if (tick === 2) state.work = manual;
+    };
+    await main(ns);
+    assert.match(state.logs[0], /Continued existing hacking work for CyberSec/);
+    assert.match(state.logs.at(-1), /externally owned or was cancelled/);
+    assert.equal(state.ticks, 2);
+    assert.equal(state.work, manual);
+    assert.deepEqual(state.events, []);
+});
+
+test("managed start leaves unmatched faction work and any pending spend untouched", async () => {
+    const { ns, state } = fixture({ "replace-study": true, budget: 300 });
+    const original = { type: "FACTION", factionName: "Tian Di Hui", factionWorkType: "security", nextCompletion: token() };
+    state.rep = 100;
+    state.work = original;
+    await main(ns);
+    assert.match(state.logs[0], /active faction work differs/);
+    assert.equal(state.work, original);
+    assert.deepEqual(state.events, []);
+    assert.equal(state.ticks, 0);
+});
+
 test("an explicit JIT6 budget can queue purchases while manual work continues", async () => {
     const { ns, state } = fixture({ budget: 300, "wait-idle": true });
     state.rep = 100;

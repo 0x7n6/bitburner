@@ -74,9 +74,10 @@ export async function main(ns: NS): Promise<void> {
     ns.disableLog("ALL");
     const flags = ns.flags([
         ["execute", false], ["reserve", -1], ["budget", 0], ["minutes", 15], ["deadline", 0],
-        ["wait-idle", false], ["replace-study", false],
+        ["wait-idle", false], ["replace-study", false], ["continuous", false],
     ]);
     const execute = flags.execute === true;
+    const continuous = flags.continuous === true;
     const reserve = Number(flags.reserve);
     const budget = Number(flags.budget);
     const minutes = Number(flags.minutes);
@@ -92,6 +93,10 @@ export async function main(ns: NS): Promise<void> {
         announce("Supply --reserve >=0, optionally --budget >=0 and --minutes 1–120. Add --execute to act.");
         return;
     }
+    if (continuous && (budget > 0 || externalDeadline > 0 || flags["wait-idle"] === true)) {
+        announce("Continuous mode requires a zero budget and no external deadline or idle-wait policy.");
+        return;
+    }
 
     const reset = ns.getResetInfo();
     const game = ns.ui.getGameInfo();
@@ -102,7 +107,7 @@ export async function main(ns: NS): Promise<void> {
     }
 
     const limit = Date.now() + minutes * 60_000;
-    const deadline = externalDeadline > 0 ? Math.min(limit, externalDeadline) : limit;
+    const deadline = continuous ? Infinity : externalDeadline > 0 ? Math.min(limit, externalDeadline) : limit;
     if (deadline <= Date.now()) {
         announce("The shared work deadline has expired.");
         return;
@@ -113,13 +118,16 @@ export async function main(ns: NS): Promise<void> {
     let spent = 0;
     let purchases = 0;
 
-    if (execute) ns.print(`[BT4 AUTO] Policy: ${minutes} min, cash floor $${reserve}, session budget $${budget}.`);
+    const duration = continuous ? "continuous" : `${minutes} min`;
+    if (execute) ns.print(`[BT4 AUTO] Policy: ${duration}, cash floor $${reserve}, session budget $${budget}.`);
 
     try {
         while (Date.now() < deadline) {
             const live = ns.getResetInfo();
             const current = ns.singularity.getCurrentWork();
-            const replacingStudy = execute && flags["replace-study"] === true && ownedTask === null && isUniversityStudy(current);
+            const canContinue = execute && flags["replace-study"] === true && ownedTask === null;
+            const replacingStudy = canContinue && isUniversityStudy(current);
+            const continuingFaction = canContinue && current?.type === "FACTION";
             let waitingForIdle = false;
             if (execute) {
                 if (live.currentNode !== reset.currentNode || live.lastNodeReset !== reset.lastNodeReset ||
@@ -144,7 +152,8 @@ export async function main(ns: NS): Promise<void> {
                     return;
                 }
                 const currentToken = current?.nextCompletion ?? null;
-                if (!replacingStudy && (currentToken !== ownedTask || (current !== null && currentToken === null))) {
+                if (!replacingStudy && !continuingFaction &&
+                    (currentToken !== ownedTask || (current !== null && currentToken === null))) {
                     waitingForIdle = flags["wait-idle"] === true && ownedTask === null && current !== null;
                     if (!waitingForIdle) {
                         announce("Stopped because player work is externally owned or was cancelled.");
@@ -173,11 +182,23 @@ export async function main(ns: NS): Promise<void> {
 
             if (!execute) {
                 announce(JSON.stringify({
-                    mode: "preview", cash: plan.cash, reserve, budget, minutes, currentWork: current,
+                    mode: "preview", cash: plan.cash, reserve, budget, minutes: continuous ? null : minutes, currentWork: current,
                     purchase: nextPurchase && seller ? { name: nextPurchase.name, faction: seller.faction, price: nextPurchase.price } : null,
                     nextWork: work ?? (university ? { university, course: "Computer Science" } : null),
                 }));
                 return;
+            }
+
+            if (continuingFaction) {
+                const token = current.nextCompletion;
+                if (!work || current.factionName !== work.faction || current.factionWorkType !== work.type ||
+                    !token || typeof token.then !== "function") {
+                    announce("Stopped because active faction work differs from the current progression plan.");
+                    return;
+                }
+                ownedTask = token;
+                workGoal = work.augmentation;
+                announce(`Continued existing ${work.type} work for ${work.faction} toward ${workGoal}.`);
             }
 
             // Keep lookups and mutations in the same turn. Re-observe prices after every purchase.
