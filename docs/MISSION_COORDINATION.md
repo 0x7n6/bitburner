@@ -1,7 +1,8 @@
 # JIT6 mission coordination
 
 The `ap.ts` menu **JIT6 dashboard** reports the active BitNode, Source-Files,
-home RAM, managed processes, and recent admission decisions. Its BitNode and
+home RAM, managed processes, recent admission decisions, and messages from the
+active player-work pilot. Its BitNode and
 faction catalogs cover all 15 nodes and 34 factions in Bitburner v3.0.1
 (`3162fd2`). Faction details add live eligibility, reputation, augmentation
 quotes and prerequisites when Singularity is available. The multiplier view
@@ -21,11 +22,22 @@ Science when the full pilot does not fit and the purchase budget is zero.
 | Work and Share | Uses remaining home RAM after accounting for emergency controls and reopening AP and its dashboard |
 | Work and Trader | Starts a long-only Trader with TIX, 4S TIX and the approved cash floor |
 
-JIT6 waits before replacing an activity it did not start. If the player takes
-over work that JIT6 started, the work pilot yields. With Formulas.exe, the
-pilot compares eligible faction work using the current player, faction favor,
-and modeled reputation per cycle. The Red Pill is a progression priority on
-the standard route. BN15 has a different source for it.
+JIT6 waits for the player to be idle when an existing activity is in progress.
+If the player takes over work that JIT6 started, the work pilot yields. With
+Formulas.exe, the pilot uses the current player and faction favor to find the
+quickest useful reputation unlock when starting a new goal. The Red Pill
+takes priority on the standard route. BN15 has a different source for it.
+
+The pilot starts faction work in the background. Its estimates use 80% of
+the base reputation rate until the Neuroreceptor Management Implant is
+installed. The planner scores the implant for removing that penalty. See
+[official faction work](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Work/FactionWork.tsx#L38-L45)
+and the [implant definition](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Augmentation/Augmentations.ts#L1229-L1240).
+
+In AP, **Progression tools → Plan progression** prints the current activity,
+cash above reserve, and the top purchase quotes and reputation gaps in short
+lines. The terminal command `run bt4-plan.ts --reserve 0` returns the JSON
+observation. Add `--summary` for the AP format.
 
 Share starts as soon as the controls and at least one worker thread fit. When
 home RAM demand rises, managed Share releases threads to restore headroom.

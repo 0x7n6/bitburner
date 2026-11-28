@@ -49,6 +49,7 @@ export async function main(ns: NS): Promise<void> {
     const visible = processes.filter(p => Object.hasOwn(SERVICES, p.filename));
     const normal = visible.map(p => `${SERVICES[p.filename as keyof typeof SERVICES]} PID ${p.pid}`).join(" | ");
     const session = processes.find(p => p.filename === "jit6.ts" && p.args.includes("--execute"));
+    const pilot = processes.find(p => p.filename === "bt4-auto.ts" && p.args.includes("--execute"));
     const darkscape = ns.fileExists("DarkscapeNavigator.exe", "home");
 
     show(`JIT6 dashboard | Bitburner ${game.version} | BN${reset.currentNode} — ${card?.name ?? "unknown"}`);
@@ -57,6 +58,9 @@ export async function main(ns: NS): Promise<void> {
     show(`Home services: ${normal || "none of the tracked services"}`);
     if (session) {
         for (const line of ns.getScriptLogs(session.pid).filter(log => log.startsWith("[JIT6 SUPPORT]")).slice(-3)) show(line);
+    }
+    if (pilot) {
+        for (const line of ns.getScriptLogs(pilot.pid).filter(log => log.startsWith("[BT4 AUTO]")).slice(-2)) show(line);
     }
     show(`Cash: $${Math.floor(player.money).toLocaleString()} | Skill: ${player.skills.hacking} | Factions joined: ${player.factions.join(", ") || "none"}`);
     show(`Active Source-Files: ${[...reset.ownedSF].map(([id, level]) => `SF${id}.${level}`).join(", ") || "none"}`);

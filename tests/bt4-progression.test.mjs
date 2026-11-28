@@ -57,6 +57,18 @@ test("planner recognizes queued prerequisites and filters repeatable augmentatio
     assert.deepEqual(state.calls, []);
 });
 
+test("planner summary shows current activity and live quotes on separate lines", async () => {
+    const { ns, state } = fixture([]);
+    ns.flags = () => ({ reserve: 600, summary: true });
+    ns.format = { number: String };
+    state.work = { type: "CLASS", classType: "Computer Science", location: "Rothman University" };
+    await plan(ns);
+    assert.equal(state.logs[0], "[BT4 PLAN] BN4 | cash $1000 | above reserve $400");
+    assert.match(state.logs[1], /Computer Science at Rothman University.*installed 0.*queued 1/);
+    assert.equal(state.logs[2], "[BT4 PLAN] Ready: Power | CyberSec | $250");
+    assert.deepEqual(state.calls, []);
+});
+
 test("approved purchase and RAM upgrade execute one transaction each", async () => {
     const buy = fixture(purchase);
     await action(buy.ns);

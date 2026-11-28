@@ -12,25 +12,40 @@ const LOCAL_UNIVERSITIES = {
 } as const;
 
 type ReputationTarget = ReturnType<typeof observeProgression>["repTargets"][number];
+type FactionWorkType = ReputationTarget["seller"]["work"][number];
 
-function chooseWork(ns: NS, target: ReputationTarget) {
+function chooseWork(ns: NS, targets: ReputationTarget[], unfocusedWorkRate: number) {
+    const target = targets[0];
+    if (!target) return undefined;
     const fallback = {
         faction: target.seller.faction,
         type: target.seller.work.find(type => type === "hacking") ?? target.seller.work[0],
         estimatedCycles: null as number | null,
+        augmentation: target.augmentation,
     };
     if (!ns.fileExists("Formulas.exe", "home")) return fallback;
 
     try {
         const player = ns.getPlayer();
+        const rates = new Map<ReputationTarget["seller"]["faction"], { type: FactionWorkType; rate: number } | null>();
         let best = fallback;
-        for (const { faction, repMissing, work } of target.workSellers) {
-            const favor = ns.singularity.getFactionFavor(faction);
-            for (const type of work) {
-                const rate = ns.formulas.work.factionGains(player, type, favor).reputation;
-                const cycles = repMissing / rate;
-                if (Number.isFinite(cycles) && cycles > 0 && cycles < (best.estimatedCycles ?? Infinity)) {
-                    best = { faction, type, estimatedCycles: cycles };
+        for (const option of targets) {
+            for (const { faction, repMissing, work } of option.workSellers) {
+                let fastest = rates.get(faction);
+                if (fastest === undefined) {
+                    const favor = ns.singularity.getFactionFavor(faction);
+                    fastest = null;
+                    for (const type of work) {
+                        const rate = ns.formulas.work.factionGains(player, type, favor).reputation * unfocusedWorkRate;
+                        if (Number.isFinite(rate) && rate > (fastest?.rate ?? 0)) fastest = { type, rate };
+                    }
+                    rates.set(faction, fastest);
+                }
+                if (fastest) {
+                    const cycles = repMissing / fastest.rate;
+                    if (Number.isFinite(cycles) && cycles < (best.estimatedCycles ?? Infinity)) {
+                        best = { faction, type: fastest.type, estimatedCycles: cycles, augmentation: option.augmentation };
+                    }
                 }
             }
         }
@@ -133,9 +148,9 @@ export async function main(ns: NS): Promise<void> {
             const seller = nextPurchase?.sellers.find(offer => offer.repMissing === 0);
 
             const repTargets = plan.repTargets.filter(target => target.useful && target.affordable);
-            const target = repTargets.find(option => option.mission) ??
-                repTargets.find(option => option.augmentation === workGoal) ?? repTargets[0];
-            const work = target && !waitingForIdle ? { ...chooseWork(ns, target), augmentation: target.augmentation } : undefined;
+            const preferred = repTargets.find(option => option.mission) ??
+                repTargets.find(option => option.augmentation === workGoal);
+            const work = waitingForIdle ? undefined : chooseWork(ns, preferred ? [preferred] : repTargets, plan.unfocusedWorkRate);
             const university = LOCAL_UNIVERSITIES[plan.city as keyof typeof LOCAL_UNIVERSITIES];
 
             if (!execute) {

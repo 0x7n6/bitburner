@@ -452,7 +452,7 @@ async function mission(ns: NS): Promise<void> {
             return;
         case "Plan progression": {
             const floor = await askNonnegative(ns, "Cash reserve for planning (game dollars)");
-            if (floor !== null) await launchAndWait(ns, "bt4-plan.ts", ["--reserve", floor]);
+            if (floor !== null) await launchAndWait(ns, "bt4-plan.ts", ["--reserve", floor, "--summary"]);
             return;
         }
         case "Start faction work": {

@@ -8,7 +8,7 @@ const token = () => new Promise(() => {});
 function fixture(options = {}) {
     const state = {
         cash: 1_000, prices: { Alpha: 200, Beta: 200 }, rep: 50,
-        work: null, purchases: [], events: [], logs: [], offers: ["Alpha", "Beta"],
+        work: null, installed: [], purchases: [], events: [], logs: [], offers: ["Alpha", "Beta"],
         processes: [], paused: false, ticks: 0, version: "3.0.1",
         generation: 10, node: 4, spare: 20, hasFormulas: false, maxTicks: 4, onTick: undefined,
     };
@@ -31,7 +31,7 @@ function fixture(options = {}) {
         },
         singularity: {
             getCurrentWork: () => state.work,
-            getOwnedAugmentations: purchased => purchased ? state.purchases : [],
+            getOwnedAugmentations: purchased => purchased ? [...state.installed, ...state.purchases] : state.installed,
             getFactionRep: () => state.rep,
             getFactionWorkTypes: () => ["hacking"],
             getAugmentationsFromFaction: () => state.offers,
@@ -100,7 +100,7 @@ test("the standard Red Pill route is prioritized on other BitNodes and omitted i
     assert.match(state.logs.at(-1), /"purchase":\{"name":"Alpha"/);
 });
 
-test("live faction formulas choose the faster seller and work type for the same augmentation", async () => {
+test("faction estimates model background work and the installed focus implant", async () => {
     const { ns, state } = fixture({ execute: false });
     state.hasFormulas = true;
     ns.getPlayer = () => ({ money: state.cash, city: "Sector-12", factions: ["CyberSec", "Aevum"] });
@@ -108,8 +108,43 @@ test("live faction formulas choose the faster seller and work type for the same 
     ns.singularity.getFactionWorkTypes = faction => faction === "Aevum" ? ["hacking", "field"] : ["hacking"];
     ns.singularity.getFactionFavor = () => 0;
     ns.formulas = { work: { factionGains: (_player, type) => ({ reputation: type === "field" ? 20 : 1 }) } };
+    const implant = "Neuroreceptor Management Implant";
+    state.purchases = [implant];
     await main(ns);
-    assert.match(state.logs[0], /"nextWork":\{"faction":"Aevum","type":"field","estimatedCycles":3.5/);
+    assert.match(state.logs.at(-1), /"nextWork":\{"faction":"Aevum","type":"field","estimatedCycles":4\.375/);
+    state.purchases = [];
+    state.installed = [implant];
+    await main(ns);
+    assert.match(state.logs.at(-1), /"nextWork":\{"faction":"Aevum","type":"field","estimatedCycles":3\.5/);
+    assert.deepEqual(state.events, []);
+});
+
+test("work starts with the quickest useful unlock and prioritizes the Red Pill when available", async () => {
+    const { ns, state } = fixture({ execute: false });
+    state.hasFormulas = true;
+    ns.singularity.getFactionFavor = () => 0;
+    ns.singularity.getAugmentationRepReq = name => name === "Beta" ? 60 : 200;
+    ns.singularity.getAugmentationStats = name => name === "Alpha" ? { hacking_exp: 1.8 } : { hacking_exp: 1.2 };
+    ns.formulas = { work: { factionGains: () => ({ reputation: 10 }) } };
+    await main(ns);
+    assert.match(state.logs.at(-1), /"estimatedCycles":1\.25,"augmentation":"Beta"/);
+
+    state.offers.push("The Red Pill");
+    state.prices["The Red Pill"] = 0;
+    await main(ns);
+    assert.match(state.logs.at(-1), /"augmentation":"The Red Pill"/);
+    assert.deepEqual(state.events, []);
+});
+
+test("a statless focus implant is eligible for a budgeted purchase preview", async () => {
+    const { ns, state } = fixture({ execute: false, budget: 300 });
+    const implant = "Neuroreceptor Management Implant";
+    state.offers = [implant];
+    state.prices[implant] = 200;
+    state.rep = 100;
+    ns.singularity.getAugmentationStats = () => ({});
+    await main(ns);
+    assert.match(state.logs.at(-1), /"purchase":\{"name":"Neuroreceptor Management Implant"/);
     assert.deepEqual(state.events, []);
 });
 

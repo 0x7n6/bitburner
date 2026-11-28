@@ -49,14 +49,20 @@ test("dashboard reads live processes and reports the BN15 completion route", asy
         getResetInfo: () => reset, getPlayer: () => player,
         getServer: name => name === "home" ? { maxRam: 128, ramUsed: 26 } : { requiredHackingSkill: 3000 },
         getScriptRam: () => 6, fileExists: name => name === "DarkscapeNavigator.exe",
-        getScriptLogs: () => ["hidden", "[JIT6 SUPPORT] Waiting for home RAM"],
-        ps: () => [{ filename: "jit6.ts", pid: 20, args: ["--execute"] }, { filename: "trader.ts", pid: 21, args: [] }],
+        getScriptLogs: pid => pid === 20 ? ["hidden", "[JIT6 SUPPORT] Waiting for home RAM"] :
+            ["[BT4 AUTO] Player already working. Waiting for idle before starting new work."],
+        ps: () => [
+            { filename: "jit6.ts", pid: 20, args: ["--execute"] },
+            { filename: "trader.ts", pid: 21, args: [] },
+            { filename: "bt4-auto.ts", pid: 22, args: ["--execute"] },
+        ],
         stock: { hasTixApiAccess: () => false },
         dnet: { getDarknetInstability: () => ({ authenticationDurationMultiplier: 1, authenticationTimeoutChance: 0.05 }) },
     };
     await dashboard(ns);
     assert.match(output.join("\n"), /JIT6 PID 20.*Trader PID 21/);
     assert.match(output.join("\n"), /Waiting for home RAM/);
+    assert.match(output.join("\n"), /\[BT4 AUTO\] Player already working\. Waiting for idle/);
     assert.match(output.join("\n"), /Hacking threshold 350\/3000; unmet/);
     assert.match(output.join("\n"), /alternate Red Pill route/);
     assert.match(output.join("\n"), /5\.0% timeout/);

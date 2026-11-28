@@ -10,6 +10,10 @@ const SCORE_WEIGHTS = {
     hacking_grow: 1,
 } as const;
 
+const NEURORECEPTOR_IMPLANT = "Neuroreceptor Management Implant";
+// Bitburner v3.0.1 applies BaseFocusBonus to unfocused faction work.
+const UNFOCUSED_WORK_RATE = 0.8;
+
 export function observeProgression(ns: NS, node: number, reserve: number) {
     const player = ns.getPlayer();
     const installed = ns.singularity.getOwnedAugmentations(false);
@@ -28,10 +32,12 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
     const candidates = [...names].filter(name => !owned.has(name)).map(name => {
         const repRequired = ns.singularity.getAugmentationRepReq(name);
         const stats = ns.singularity.getAugmentationStats(name);
-        const score = Object.entries(SCORE_WEIGHTS).reduce((sum, [key, weight]) => {
+        const numericScore = Object.entries(SCORE_WEIGHTS).reduce((sum, [key, weight]) => {
             const multiplier = stats[key as keyof typeof SCORE_WEIGHTS] ?? 1;
             return sum + weight * Math.log(multiplier > 0 ? multiplier : 1);
         }, 0);
+        const improvesUnfocusedWork = name === NEURORECEPTOR_IMPLANT;
+        const score = numericScore + (improvesUnfocusedWork ? SCORE_WEIGHTS.faction_rep * Math.log(1 / UNFOCUSED_WORK_RATE) : 0);
         const sellers = factions.filter(faction => faction.offers.includes(name)).map(faction => ({
             faction: faction.name,
             repMissing: Math.max(0, repRequired - faction.rep),
@@ -40,6 +46,7 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
         return {
             name,
             score,
+            improvesUnfocusedWork,
             mission: name === "The Red Pill",
             price: ns.singularity.getAugmentationPrice(name),
             missingPrerequisites: ns.singularity.getAugmentationPrereq(name).filter(prerequisite => !owned.has(prerequisite)),
@@ -103,6 +110,7 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
         city: player.city,
         available,
         installedCount: installed.length,
+        unfocusedWorkRate: installed.includes(NEURORECEPTOR_IMPLANT) ? 1 : UNFOCUSED_WORK_RATE,
         queuedCount: purchased.length - installed.length,
         ready: ready.map(aug => ({ ...aug, useful: useful.has(aug.name) })),
         repTargets,
@@ -116,20 +124,46 @@ export async function main(ns: NS): Promise<void> {
         ns.tprint("[BT4] Singularity unavailable. Use Basic snapshot.");
         return;
     }
-    const flags = ns.flags([["reserve", 0]]);
+    const flags = ns.flags([["reserve", 0], ["summary", false]]);
     const reserve = Number(flags.reserve);
     if (!Number.isFinite(reserve) || reserve < 0) {
         ns.tprint("[BT4] --reserve must be a finite, nonnegative number.");
         return;
     }
     const plan = observeProgression(ns, reset.currentNode, reserve);
+    const currentWork = ns.singularity.getCurrentWork();
+    if (flags.summary === true) {
+        const dollars = (amount: number) => `$${ns.format.number(amount)}`;
+        const show = (message: string) => ns.tprint(`[BT4 PLAN] ${message}`);
+        const work = currentWork?.type === "CLASS" ? `${currentWork.classType} at ${currentWork.location}` :
+            currentWork?.type === "FACTION" ? `${currentWork.factionWorkType} work for ${currentWork.factionName}` :
+                currentWork?.type ?? "idle";
+        show(`BN${reset.currentNode} | cash ${dollars(plan.cash)} | above reserve ${dollars(plan.available)}`);
+        show(`Work: ${work} | installed ${plan.installedCount} | queued ${plan.queuedCount}`);
+        const ranked = plan.ready.filter(aug => aug.useful);
+        if (!ranked.length) show("No progression augmentation is ready to buy from joined factions.");
+        for (const aug of ranked.slice(0, 6)) {
+            const seller = aug.sellers.find(offer => offer.repMissing === 0);
+            const effect = aug.improvesUnfocusedWork ? " | removes the unfocused work penalty after installation" : "";
+            if (seller) show(`Ready: ${aug.name} | ${seller.faction} | ${dollars(aug.price)}${effect}`);
+        }
+        for (const aug of plan.ready.filter(aug => !aug.useful).slice(0, 3)) {
+            show(`Other available purchase: ${aug.name} | ${dollars(aug.price)}`);
+        }
+        const targets = plan.repTargets.filter(target => target.useful && target.affordable);
+        for (const { augmentation, seller } of targets.slice(0, 6)) {
+            show(`Reputation target: ${augmentation} | ${seller.faction} | ${Math.ceil(seller.repMissing).toLocaleString()} rep remaining`);
+        }
+        if (!ranked.length && !targets.length) show("Check additional sellers under JIT6 dashboard → Faction details.");
+        return;
+    }
     ns.tprint(JSON.stringify({
         status: "OBSERVATION",
         bitNode: reset.currentNode,
         cash: plan.cash,
         assumedReserve: reserve,
         availableAboveReserve: plan.available,
-        currentWork: ns.singularity.getCurrentWork(),
+        currentWork,
         installedCount: plan.installedCount,
         queuedCount: plan.queuedCount,
         homeRamUpgrade: { currentGb: ns.getServerMaxRam("home"), quote: ns.singularity.getUpgradeHomeRamCost() },
