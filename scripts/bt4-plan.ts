@@ -10,13 +10,7 @@ const SCORE_WEIGHTS = {
     hacking_grow: 1,
 } as const;
 
-export async function main(ns: NS): Promise<void> {
-    const reset = ns.getResetInfo();
-    if (reset.currentNode !== 4 && !(reset.ownedSF.get(4) ?? 0)) {
-        ns.tprint("[BT4] Singularity unavailable. Use Basic snapshot.");
-        return;
-    }
-
+export function observeProgression(ns: NS, node: number, reserve: number) {
     const player = ns.getPlayer();
     const installed = ns.singularity.getOwnedAugmentations(false);
     const purchased = ns.singularity.getOwnedAugmentations(true);
@@ -45,7 +39,7 @@ export async function main(ns: NS): Promise<void> {
         return {
             name,
             score,
-            mission: reset.currentNode === 4 && name === "The Red Pill",
+            mission: node === 4 && name === "The Red Pill",
             price: ns.singularity.getAugmentationPrice(name),
             missingPrerequisites: ns.singularity.getAugmentationPrereq(name).filter(prerequisite => !owned.has(prerequisite)),
             sellers,
@@ -65,12 +59,6 @@ export async function main(ns: NS): Promise<void> {
         b.price - a.price || a.name.localeCompare(b.name);
     candidates.sort(rank);
 
-    const flags = ns.flags([["reserve", 0]]);
-    const reserve = Number(flags.reserve);
-    if (!Number.isFinite(reserve) || reserve < 0) {
-        ns.tprint("[BT4] --reserve must be a finite, nonnegative number.");
-        return;
-    }
     const available = Math.max(0, player.money - reserve);
     const ready = candidates.filter(aug => aug.missingPrerequisites.length === 0 &&
         aug.price <= available && player.money >= reserve && aug.sellers.some(seller => seller.repMissing === 0));
@@ -78,26 +66,51 @@ export async function main(ns: NS): Promise<void> {
         aug.sellers.length > 0 && aug.sellers.every(seller => seller.repMissing > 0))
         .map(aug => ({
             augmentation: aug.name,
+            useful: aug.mission || aug.score > 0 || unlocks.has(aug.name),
             affordable: aug.price <= available && player.money >= reserve,
             seller: aug.sellers.find(seller => seller.work.length > 0),
         }))
         .filter(target => target.seller);
 
-    const currentWork = ns.singularity.getCurrentWork();
+    return {
+        cash: player.money,
+        city: player.city,
+        available,
+        installedCount: installed.length,
+        queuedCount: purchased.length - installed.length,
+        ready: ready.map(aug => ({ ...aug, useful: aug.mission || aug.score > 0 || unlocks.has(aug.name) })),
+        repTargets,
+        candidates,
+    };
+}
+
+export async function main(ns: NS): Promise<void> {
+    const reset = ns.getResetInfo();
+    if (reset.currentNode !== 4 && !(reset.ownedSF.get(4) ?? 0)) {
+        ns.tprint("[BT4] Singularity unavailable. Use Basic snapshot.");
+        return;
+    }
+    const flags = ns.flags([["reserve", 0]]);
+    const reserve = Number(flags.reserve);
+    if (!Number.isFinite(reserve) || reserve < 0) {
+        ns.tprint("[BT4] --reserve must be a finite, nonnegative number.");
+        return;
+    }
+    const plan = observeProgression(ns, reset.currentNode, reserve);
     ns.tprint(JSON.stringify({
         status: "OBSERVATION",
         bitNode: reset.currentNode,
-        cash: player.money,
+        cash: plan.cash,
         assumedReserve: reserve,
-        availableAboveReserve: available,
-        currentWork,
-        installedCount: installed.length,
-        queuedCount: purchased.length - installed.length,
+        availableAboveReserve: plan.available,
+        currentWork: ns.singularity.getCurrentWork(),
+        installedCount: plan.installedCount,
+        queuedCount: plan.queuedCount,
         homeRamUpgrade: { currentGb: ns.getServerMaxRam("home"), quote: ns.singularity.getUpgradeHomeRamCost() },
-        readyToBuy: ready.slice(0, 12),
-        actionableReputationTargets: repTargets.slice(0, 12),
-        candidates: candidates.length,
-        prerequisiteBlocked: candidates.filter(aug => aug.missingPrerequisites.length > 0).slice(0, 12),
+        readyToBuy: plan.ready.slice(0, 12),
+        actionableReputationTargets: plan.repTargets.slice(0, 12),
+        candidates: plan.candidates.length,
+        prerequisiteBlocked: plan.candidates.filter(aug => aug.missingPrerequisites.length > 0).slice(0, 12),
         guidance: [
             "Re-plan after each purchase. Prices are live quotes for this queue, not combined estimates.",
             "Scores weight progression multipliers and prerequisite demand. Reputation targets show gaps, not time estimates.",

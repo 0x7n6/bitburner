@@ -23,7 +23,7 @@ export async function main(ns: NS): Promise<void> {
         const reserve = ns.getScriptRam("stopfarm.ts", "home");
         const free = ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
         if (!(reserve > 0) || free < reserve) throw new Error("Emergency RAM is unavailable.");
-        if (ns.ps("home").some(p => p.filename === "bt4-action.ts" && p.pid !== ns.pid)) {
+        if (ns.ps("home").some(p => ["bt4-action.ts", "bt4-auto.ts"].includes(p.filename) && p.pid !== ns.pid)) {
             throw new Error("Another BT4 action is active.");
         }
     }

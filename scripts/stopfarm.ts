@@ -41,6 +41,7 @@ export async function main(
 
     const victims =
         new Set([
+            "bt4-auto.ts",
             "early.ts",
             "jit5.ts",
 

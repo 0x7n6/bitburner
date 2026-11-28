@@ -5,7 +5,7 @@ on:
     paths:
       - 'scripts/**'
       - 'helper/check-python.py'
-      - 'tests/bt4-progression.test.mjs'
+      - 'tests/bt4*.test.mjs'
       - '.github/workflows/script-checks.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -15,7 +15,7 @@ on:
     paths:
       - 'scripts/**'
       - 'helper/check-python.py'
-      - 'tests/bt4-progression.test.mjs'
+      - 'tests/bt4*.test.mjs'
       - '.github/workflows/script-checks.yml'
       - 'package.json'
       - 'package-lock.json'
@@ -50,4 +50,4 @@ jobs:
       - name: Typecheck Netscript
         run: npm run typecheck
       - name: Test BT4 progression guards
-        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/bt4-progression.test.mjs
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/bt4*.test.mjs

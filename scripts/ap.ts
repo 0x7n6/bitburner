@@ -5,8 +5,10 @@ type ScriptArg = string | number | boolean;
 const MODE_FILE = ".7n8-engine-mode.txt";
 const PAUSE_FILE = ".7n8-pause.txt";
 
+const BT4_AUTO = "bt4-auto.ts";
+
 const MISSION_TOOLS = new Set([
-    "bt4.ts", "bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts",
+    "bt4.ts", "bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts", BT4_AUTO,
 ]);
 
 const ENGINES = [
@@ -186,6 +188,7 @@ function showStatus(ns: NS): void {
 
     ns.tprint(`Engine     : ${engine || "IDLE"}`);
     ns.tprint(`Daemon     : ${status("daemon.ts")}`);
+    ns.tprint(`BT4 AUTO   : ${status(BT4_AUTO)}`);
     ns.tprint(`Progression: ${status("progression.ts")}`);
     ns.tprint(`Share      : ${status("share.ts")}`);
     ns.tprint(`Trader     : ${status("trader.ts")}`);
@@ -416,11 +419,49 @@ async function mission(ns: NS): Promise<void> {
         "Singularity detail",
         "Plan progression",
         "Start faction work",
+        "Preview autopilot",
+        "Start autopilot",
+        "Stop autopilot",
         "Buy one augmentation",
         "Upgrade home RAM",
     ]);
 
     switch (choice) {
+        case "Preview autopilot":
+        case "Start autopilot": {
+            const floor = await askNonnegative(ns, "Cash floor to protect (game dollars)");
+            if (floor === null) return;
+            const budget = await askNonnegative(ns, "Maximum total augmentation spend for this session (0 disables purchases)");
+            if (budget === null) return;
+            const args: ScriptArg[] = ["--reserve", floor, "--budget", budget];
+            if (choice === "Preview autopilot") {
+                await launchAndWait(ns, BT4_AUTO, args);
+                return;
+            }
+            const minutes = await askNonnegative(ns, "Session length in whole minutes (1–120)");
+            if (minutes === null) return;
+            if (!Number.isInteger(minutes) || minutes < 1 || minutes > 120) {
+                ns.tprint("[BT4] Enter a whole number from 1 to 120.");
+                return;
+            }
+            const confirmed = await ns.prompt(
+                `Start BN4 autopilot for ${minutes} min? It will manage its own faction work or free study and may queue up to 8 augmentations within $${budget.toLocaleString()} total, keeping $${floor.toLocaleString()} cash.`,
+                { type: "boolean" },
+            );
+            if (confirmed === true) launch(ns, BT4_AUTO, [...args, "--minutes", minutes, "--execute"]);
+            return;
+        }
+        case "Stop autopilot": {
+            const pilot = ns.ps("home").find(process => process.filename === BT4_AUTO);
+            if (!pilot) {
+                ns.tprint("[BT4] Autopilot is offline.");
+                return;
+            }
+            if (await ns.prompt("Stop BT4 autopilot? Current player work will continue.", { type: "boolean" }) === true) {
+                ns.tprint(ns.kill(pilot.pid) ? "[BT4] Autopilot stopped." : "[BT4] Autopilot already exited.");
+            }
+            return;
+        }
         case "Basic snapshot":
             await launchAndWait(ns, "bt4.ts", ["--dry-run"]);
             return;
@@ -835,12 +876,18 @@ function launch(
                 return 0;
             }
         }
+        if (script === BT4_AUTO && (!ns.fileExists("bt4-plan.ts", "home") ||
+            ns.getResetInfo().currentNode !== 4)) {
+            ns.tprint("[BT4] Autopilot needs BN4 and bt4-plan.ts.");
+            return 0;
+        }
         const reserve = ns.getScriptRam("stopfarm.ts", "home");
         if (reserve <= 0 || free - required < reserve) {
             ns.tprint(`[BT4] Admission refused: required=${required.toFixed(2)} GB, free=${free.toFixed(2)} GB, emergency=${reserve.toFixed(2)} GB. Missing/invalid stopfarm.ts also blocks admission.`);
             return 0;
         }
-        if (running.some(p => MISSION_TOOLS.has(p.filename))) {
+        if (running.some(p => MISSION_TOOLS.has(p.filename) &&
+            (p.filename !== BT4_AUTO || script === BT4_AUTO || script === "bt4-action.ts"))) {
             ns.tprint("[BT4] A mission tool is already running.");
             return 0;
         }
