@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { main as ap } from "../scripts/ap.ts";
+import { main as detail } from "../scripts/bt4-detail.ts";
 import { BIT_NODES, FACTIONS, bitNodeCatalog, factionOverview, findFaction } from "../scripts/bitburner-catalog.ts";
 import { main as dashboard } from "../scripts/jit6-dashboard.ts";
 import { main as factionDetails, requirementStatus } from "../scripts/jit6-faction.ts";
@@ -87,6 +88,24 @@ test("faction details provide baseline eligibility and live quotes without work 
     delete ns.singularity;
     await factionDetails(ns);
     assert.match(output.at(-1), /matching game version/);
+});
+
+test("reset summary reports queued augmentations and active services with read-only calls", async () => {
+    const { reset } = snapshot();
+    reset.ownedAugs.set("NeuroFlux Governor", 2);
+    const output = [];
+    const ns = {
+        flags: () => ({ "reset-summary": true }), getResetInfo: () => reset, tprint: line => output.push(line),
+        ps: () => [{ filename: "trader.ts", pid: 32 }],
+        singularity: {
+            getOwnedAugmentations: includeQueue => includeQueue
+                ? ["NeuroFlux Governor", "NeuroFlux Governor", "The Red Pill"] : ["NeuroFlux Governor"],
+        },
+    };
+    await detail(ns);
+    assert.match(output.join("\n"), /Queued \(2\): NeuroFlux Governor, The Red Pill/);
+    assert.match(output.join("\n"), /trader\.ts \(PID 32\)/);
+    assert.match(output.join("\n"), /stock positions/);
 });
 
 test("multiplier view uses the requested BN12 level and honors the SF5 gate", async () => {

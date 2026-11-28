@@ -1,5 +1,5 @@
 import type { NS, Player, PlayerRequirement } from "@ns";
-import { collectBase, observe } from "./bt4";
+import { collectBase, observe } from "./bt4.ts";
 
 type Verdict = "MET" | "UNMET" | "UNKNOWN";
 export function evaluateRequirement(req: PlayerRequirement, player: Player, installed: number): Verdict {
@@ -35,6 +35,23 @@ export function queuedOnly(installed: string[], purchased: string[]): string[] {
         remaining.splice(index, 1);
         return false;
     });
+}
+
+function showResetSummary(ns: NS): void {
+    const reset = ns.getResetInfo();
+    const hasSingularity = reset.currentNode === 4 || (reset.ownedSF.get(4) ?? 0) > 0;
+    ns.tprint(`[RESET] BN${reset.currentNode} | distinct installed augmentations ${reset.ownedAugs.size} | Red Pill installed ${reset.ownedAugs.has("The Red Pill") ? "yes" : "no"}`);
+    if (hasSingularity) {
+        const queued = observe(() => queuedOnly(ns.singularity.getOwnedAugmentations(false), ns.singularity.getOwnedAugmentations(true)));
+        ns.tprint(queued.status === "KNOWN" ? `[RESET] Queued (${queued.value.length}): ${queued.value.join(", ") || "none"}` :
+            `[RESET] Could not read queued augmentations. ${queued.reason}`);
+    } else {
+        ns.tprint("[RESET] Read queued augmentations in the game UI while Singularity is locked.");
+    }
+    const active = ns.ps("home").filter(process => ["jit6.ts", "bt4-auto.ts", "share.ts", "trader.ts"].includes(process.filename));
+    if (active.length) ns.tprint(`[RESET] Active on home: ${active.map(process => `${process.filename} (PID ${process.pid})`).join(", ")}.`);
+    ns.tprint("[RESET] Installing resets cash, skills, faction reputation, and stock positions. Home scripts, RAM and cores are retained in the same BitNode.");
+    ns.tprint("[RESET] Open Augmentations in the game UI to review the queue and decide when to install.");
 }
 
 export function collectDetail(ns: NS) {
@@ -77,7 +94,11 @@ export function collectDetail(ns: NS) {
 }
 
 export async function main(ns: NS): Promise<void> {
-    const flags = ns.flags([["dry-run", false], ["json", false], ["help", false]]);
-    if (flags.help) { ns.tprint("BT4 detail: run bt4-detail.ts [--dry-run] [--json]. Prefer AP reserve-checked admission. No mutations."); return; }
+    const flags = ns.flags([["dry-run", false], ["reset-summary", false], ["json", false], ["help", false]]);
+    if (flags.help) { ns.tprint("BT4 detail: run bt4-detail.ts [--reset-summary] [--json]. All views are read-only."); return; }
+    if (flags["reset-summary"] === true) {
+        showResetSummary(ns);
+        return;
+    }
     ns.tprint(JSON.stringify(collectDetail(ns), null, flags.json ? 0 : 2));
 }

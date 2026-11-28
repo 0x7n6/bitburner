@@ -1,0 +1,66 @@
+# JIT6 mission coordination
+
+The `ap.ts` menu **JIT6 dashboard** reports the active BitNode, Source-Files,
+home RAM, managed processes, and recent admission decisions. Its BitNode and
+faction catalogs cover all 15 nodes and 34 factions in Bitburner v3.0.1
+(`3162fd2`). Faction details add live eligibility, reputation, augmentation
+quotes and prerequisites when Singularity is available. The multiplier view
+requires BN5 or active SF5.
+
+**JIT6 sessions** runs on `home`. The scheduler rechecks the reset generation,
+measured RAM, and spending conflicts during a bounded session. Player work
+requires BN4 or active SF4. The lightweight worker can start free Computer
+Science when the full pilot does not fit and the purchase budget is zero.
+
+| Session option | Behavior |
+| --- | --- |
+| Preview admission | Reports the next work or home-upgrade decision without launching a task |
+| Start work session | Runs faction work or free study within the requested duration |
+| Work with an augmentation budget | Queues eligible augmentations within the total budget and cash floor, even if existing player work is still active |
+| Work with one home upgrade | Checks the current RAM upgrade quote against the approved price and cash floor |
+| Work and Share | Uses remaining home RAM after accounting for emergency controls and reopening AP and its dashboard |
+| Work and Trader | Starts a long-only Trader with TIX, 4S TIX and the approved cash floor |
+
+JIT6 waits before replacing an activity it did not start. If the player takes
+over work that JIT6 started, the work pilot yields. With Formulas.exe, the
+pilot compares eligible faction work using the current player, faction favor,
+and modeled reputation per cycle. The Red Pill is a progression priority on
+the standard route. BN15 has a different source for it.
+
+Share starts as soon as the controls and at least one worker thread fit. When
+home RAM demand rises, managed Share releases threads to restore headroom.
+A combined session also accounts for a pending Trader launch. Trader runs in
+a session without an augmentation or home-upgrade budget. `stp` ends JIT6 and
+its services while preserving player activity and holding Trader positions.
+`stp-rs` starts a fresh 15-minute work-only session. Use `stp-os` to stop a
+running legacy supervisor before resuming JIT6.
+
+**Augmentation reset readiness** lists the observed queue, installed Red Pill
+status and active services. An augmentation installation in the same BitNode
+resets cash, skills, faction reputation and stock positions. Home scripts, RAM
+and cores are retained. Review the game UI before installing or choosing a
+new BitNode.
+
+## In-game acceptance
+
+1. Sync `scripts/` and reopen AP. Check the current BitNode, Source-Files,
+   active process names and free RAM under **JIT6 dashboard**.
+2. Start a work-only session while studying. Verify the existing activity
+   continues, then check work admission after the character is idle.
+3. Try Share on a controlled save. Compare free RAM with the measured cost
+   of `stopfarm.ts`, `ap.ts`, and `jit6-dashboard.ts`. Start and stop Trader in
+   a separate controlled session and confirm the in-game cash floor.
+4. Read **Augmentation reset readiness** before installing. After a reset,
+   start a new session for the new state. Check that JIT6 shows the correct
+   BitNode and recognizes the capabilities available in that cycle.
+
+The automated tests model API responses and process ownership. They cannot
+measure script RAM or timing in a live game save.
+
+## References
+
+- [Official Netscript declarations for v3.0.1](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/ScriptEditor/NetscriptDefinitions.d.ts)
+- [Official faction eligibility and work](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Faction/FactionInfo.tsx)
+- [Official augmentation and reset mechanics](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Documentation/doc/en/basic/augmentations.md)
+- [Community faction work selection](../sources/alainbryden/work-for-factions.js) and [stock reservation/commission handling](../sources/alainbryden/stockmaster.js)
+- [Earlier mission coordinator documentation](https://github.com/0x7n6/bitburner/blob/7190bfcb52fac12c16e598dddf2f8bef66c7202f/docs/MISSION_COORDINATION.md)

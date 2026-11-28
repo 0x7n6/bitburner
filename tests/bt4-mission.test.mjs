@@ -175,3 +175,16 @@ test("stp-rs preserves the pause when JIT6 cannot be launched", async () => {
     await stopfarm(ns);
     assert.equal(state.files.get(".7n8-pause.txt"), "original pause");
 });
+
+test("stopfarm rejects remote execution and conflicting lifecycle flags before changing state", async () => {
+    const { ns, state } = fixture({ os: true, resume: true });
+    ns.getHostname = () => "remote-worker";
+    await stopfarm(ns);
+    assert.match(state.logs.at(-1), /on home/);
+    ns.getHostname = () => "home";
+    await stopfarm(ns);
+    assert.match(state.logs.at(-1), /either --resume or --os/);
+    assert.equal(state.files.has(".7n8-pause.txt"), false);
+    assert.deepEqual(state.killed, []);
+    assert.deepEqual(state.launched, []);
+});

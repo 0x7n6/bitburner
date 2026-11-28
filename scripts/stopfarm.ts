@@ -26,6 +26,15 @@ export async function main(
             ["verbose", false],
         ]);
 
+    if (ns.getHostname() !== "home") {
+        ns.tprint("[JIT6] Run stopfarm.ts on home so the pause state reaches all managed services.");
+        return;
+    }
+    if (flags.resume && flags.os) {
+        ns.tprint("[JIT6] Choose either --resume or --os.");
+        return;
+    }
+
     if (flags["support-only"]) {
         if (flags.resume && !flags.os) await resumeJit6(ns, false);
         else ns.tprint("Use --resume --support-only to resume support work.");
@@ -198,10 +207,6 @@ export async function main(
 }
 
 async function resumeJit6(ns: NS, launchSession: boolean): Promise<void> {
-    if (ns.getHostname() !== "home") {
-        ns.tprint("[JIT6] Run resume on home.");
-        return;
-    }
     const running = ns.ps("home");
     if (running.some(p => p.filename === DAEMON || p.filename === BOOTSTRAP)) {
         ns.tprint("[JIT6] Legacy supervisor is running. Use Shutdown OS once, then resume JIT6.");

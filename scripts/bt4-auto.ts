@@ -11,6 +11,35 @@ const LOCAL_UNIVERSITIES = {
     "Volhaven": "ZB Institute of Technology",
 } as const;
 
+type ReputationTarget = ReturnType<typeof observeProgression>["repTargets"][number];
+
+function chooseWork(ns: NS, target: ReputationTarget) {
+    const fallback = {
+        faction: target.seller.faction,
+        type: target.seller.work.find(type => type === "hacking") ?? target.seller.work[0],
+        estimatedCycles: null as number | null,
+    };
+    if (!ns.fileExists("Formulas.exe", "home")) return fallback;
+
+    try {
+        const player = ns.getPlayer();
+        let best = fallback;
+        for (const { faction, repMissing, work } of target.workSellers) {
+            const favor = ns.singularity.getFactionFavor(faction);
+            for (const type of work) {
+                const rate = ns.formulas.work.factionGains(player, type, favor).reputation;
+                const cycles = repMissing / rate;
+                if (Number.isFinite(cycles) && cycles > 0 && cycles < (best.estimatedCycles ?? Infinity)) {
+                    best = { faction, type, estimatedCycles: cycles };
+                }
+            }
+        }
+        return best;
+    } catch {
+        return fallback;
+    }
+}
+
 export async function main(ns: NS): Promise<void> {
     ns.disableLog("ALL");
     const flags = ns.flags([["execute", false], ["reserve", -1], ["budget", 0], ["minutes", 15], ["deadline", 0], ["wait-idle", false]]);
@@ -19,7 +48,11 @@ export async function main(ns: NS): Promise<void> {
     const budget = Number(flags.budget);
     const minutes = Number(flags.minutes);
     const externalDeadline = Number(flags.deadline ?? 0);
-    const announce = (message: string) => ns.tprint(`[BT4 AUTO] ${message}`);
+    const announce = (message: string) => {
+        const line = `[BT4 AUTO] ${message}`;
+        ns.print(line);
+        ns.tprint(line);
+    };
     if (!Number.isFinite(reserve) || reserve < 0 || !Number.isFinite(budget) || budget < 0 ||
         !Number.isFinite(externalDeadline) || externalDeadline < 0 ||
         !Number.isInteger(minutes) || minutes < 1 || minutes > 120 || (Array.isArray(flags._) && flags._.length)) {
@@ -53,6 +86,7 @@ export async function main(ns: NS): Promise<void> {
         while (Date.now() < deadline) {
             const live = ns.getResetInfo();
             const current = ns.singularity.getCurrentWork();
+            let waitingForIdle = false;
             if (execute) {
                 if (live.currentNode !== reset.currentNode || live.lastNodeReset !== reset.lastNodeReset ||
                     live.lastAugReset !== reset.lastAugReset) {
@@ -77,15 +111,18 @@ export async function main(ns: NS): Promise<void> {
                 }
                 const currentToken = current?.nextCompletion ?? null;
                 if (currentToken !== ownedTask || (current !== null && currentToken === null)) {
-                    if (flags["wait-idle"] === true && ownedTask === null && current !== null) {
-                        if (!idleWaitReported) announce("Player already working. Waiting for idle within this session.");
-                        idleWaitReported = true;
-                        await ns.sleep(Math.min(CHECK_INTERVAL_MS, Math.max(0, deadline - Date.now())));
-                        continue;
+                    waitingForIdle = flags["wait-idle"] === true && ownedTask === null && current !== null;
+                    if (!waitingForIdle) {
+                        announce("Stopped because player work is externally owned or was cancelled.");
+                        return;
                     }
-                    announce("Stopped because player work is externally owned or was cancelled.");
-                    return;
+                    if (!idleWaitReported) announce("Player already working. Waiting for idle before starting new work.");
+                    idleWaitReported = true;
                 }
+            }
+            if (waitingForIdle && (spent >= budget || purchases >= MAX_PURCHASES)) {
+                await ns.sleep(Math.min(CHECK_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+                continue;
             }
 
             const plan = observeProgression(ns, live.currentNode, reserve);
@@ -96,18 +133,16 @@ export async function main(ns: NS): Promise<void> {
             const seller = nextPurchase?.sellers.find(offer => offer.repMissing === 0);
 
             const repTargets = plan.repTargets.filter(target => target.useful && target.affordable);
-            const target = repTargets.find(option => option.augmentation === workGoal && option.seller?.work.includes("hacking")) ??
-                repTargets.find(option => option.seller?.work.includes("hacking")) ?? repTargets[0];
-            const work = target?.seller;
-            const workType = work?.work.find(type => type === "hacking") ?? work?.work[0];
+            const target = repTargets.find(option => option.mission) ??
+                repTargets.find(option => option.augmentation === workGoal) ?? repTargets[0];
+            const work = target && !waitingForIdle ? { ...chooseWork(ns, target), augmentation: target.augmentation } : undefined;
             const university = LOCAL_UNIVERSITIES[plan.city as keyof typeof LOCAL_UNIVERSITIES];
 
             if (!execute) {
                 announce(JSON.stringify({
                     mode: "preview", cash: plan.cash, reserve, budget, minutes, currentWork: current,
                     purchase: nextPurchase && seller ? { name: nextPurchase.name, faction: seller.faction, price: nextPurchase.price } : null,
-                    nextWork: work && workType ? { faction: work.faction, type: workType, augmentation: target.augmentation }
-                        : university ? { university, course: "Computer Science" } : null,
+                    nextWork: work ?? (university ? { university, course: "Computer Science" } : null),
                 }));
                 return;
             }
@@ -122,17 +157,17 @@ export async function main(ns: NS): Promise<void> {
                 spent += nextPurchase.price;
                 purchases++;
                 announce(`Queued ${nextPurchase.name} for $${nextPurchase.price}; session spent $${spent}/$${budget}.`);
-            } else {
+            } else if (!waitingForIdle) {
                 let started = false;
-                if (work && workType) {
+                if (work) {
                     if (current?.type === "FACTION" && current.factionName === work.faction &&
-                        current.factionWorkType === workType) {
-                        workGoal = target.augmentation;
+                        current.factionWorkType === work.type) {
+                        workGoal = work.augmentation;
                     } else {
-                        started = ns.singularity.workForFaction(work.faction, workType, false);
-                        workGoal = target.augmentation;
-                        if (!started) throw new Error(`Game rejected ${workType} work for ${work.faction}.`);
-                        announce(`Started ${workType} work for ${work.faction} toward ${workGoal}.`);
+                        started = ns.singularity.workForFaction(work.faction, work.type, false);
+                        workGoal = work.augmentation;
+                        if (!started) throw new Error(`Game rejected ${work.type} work for ${work.faction}.`);
+                        announce(`Started ${work.type} work for ${work.faction} toward ${workGoal}.`);
                     }
                 } else if (university && (current === null || current.type === "FACTION")) {
                     started = ns.singularity.universityCourse(university, "Computer Science", false);

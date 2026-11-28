@@ -10,15 +10,15 @@ function fixture(options = {}) {
         cash: 1_000, prices: { Alpha: 200, Beta: 200 }, rep: 50,
         work: null, purchases: [], events: [], logs: [], offers: ["Alpha", "Beta"],
         processes: [], paused: false, ticks: 0, version: "3.0.1",
-        generation: 10, spare: 20, maxTicks: 4, onTick: undefined,
+        generation: 10, node: 4, spare: 20, hasFormulas: false, maxTicks: 4, onTick: undefined,
     };
     const ns = {
         pid: 20, getHostname: () => "home", disableLog: () => {},
         ui: { getGameInfo: () => ({ version: state.version, commit: "3162fd2" }) },
         flags: () => ({ execute: true, reserve: 600, budget: 0, minutes: 1, _: [], ...options }),
         tprint: message => state.logs.push(message), print: () => {},
-        getResetInfo: () => ({ currentNode: 4, lastNodeReset: 1, lastAugReset: state.generation }),
-        fileExists: () => state.paused,
+        getResetInfo: () => ({ currentNode: state.node, ownedSF: new Map([[4, 1]]), lastNodeReset: 1, lastAugReset: state.generation }),
+        fileExists: file => file === "Formulas.exe" ? state.hasFormulas : state.paused,
         getScriptRam: () => 5,
         getServerMaxRam: () => 128,
         getServerUsedRam: () => 128 - state.spare,
@@ -73,6 +73,43 @@ test("existing player work is preserved", async () => {
     state.work = { type: "CRIME", nextCompletion: token() };
     await main(ns);
     assert.match(state.logs[0], /externally owned/);
+    assert.deepEqual(state.events, []);
+});
+
+test("an explicit JIT6 budget can queue purchases while manual work continues", async () => {
+    const { ns, state } = fixture({ budget: 300, "wait-idle": true });
+    state.rep = 100;
+    const manual = { type: "CLASS", nextCompletion: token() };
+    state.work = manual;
+    await main(ns);
+    assert.deepEqual(state.events, [["purchase", "Alpha"]]);
+    assert.equal(state.work, manual);
+});
+
+test("the standard Red Pill route is prioritized on other BitNodes and omitted in BN15", async () => {
+    const { ns, state } = fixture({ execute: false, budget: 300 });
+    state.rep = 100;
+    state.node = 12;
+    state.offers = ["Alpha", "The Red Pill"];
+    state.prices["The Red Pill"] = 1;
+    ns.singularity.getAugmentationStats = name => name === "Alpha" ? { hacking_exp: 1.25 } : {};
+    await main(ns);
+    assert.match(state.logs.at(-1), /"purchase":\{"name":"The Red Pill"/);
+    state.node = 15;
+    await main(ns);
+    assert.match(state.logs.at(-1), /"purchase":\{"name":"Alpha"/);
+});
+
+test("live faction formulas choose the faster seller and work type for the same augmentation", async () => {
+    const { ns, state } = fixture({ execute: false });
+    state.hasFormulas = true;
+    ns.getPlayer = () => ({ money: state.cash, city: "Sector-12", factions: ["CyberSec", "Aevum"] });
+    ns.singularity.getFactionRep = faction => faction === "CyberSec" ? 90 : 30;
+    ns.singularity.getFactionWorkTypes = faction => faction === "Aevum" ? ["hacking", "field"] : ["hacking"];
+    ns.singularity.getFactionFavor = () => 0;
+    ns.formulas = { work: { factionGains: (_player, type) => ({ reputation: type === "field" ? 20 : 1 }) } };
+    await main(ns);
+    assert.match(state.logs[0], /"nextWork":\{"faction":"Aevum","type":"field","estimatedCycles":3.5/);
     assert.deepEqual(state.events, []);
 });
 

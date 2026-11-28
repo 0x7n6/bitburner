@@ -39,7 +39,7 @@ export async function main(
 
     const reserve =
         Math.max(
-            128,
+            owner ? ns.getScriptRam("stopfarm.ts", "home") : 128,
             Number(
                 flags.reserve
             ) || 512
@@ -282,11 +282,8 @@ export async function main(
                 )
             );
 
-        if (
-            desired !== current &&
-            delta >
-                tolerance
-        ) {
+        const needsResize = desired !== current && (delta > tolerance || (owner > 0 && (current === 0 || desired < current)));
+        if (needsResize) {
             if (worker) {
                 ns.kill(
                     worker.pid
@@ -301,11 +298,7 @@ export async function main(
                 0
             ) {
                 const pid =
-                    ns.exec(
-                        WORKER,
-                        "home",
-                        desired
-                    );
+                    ns.exec(WORKER, "home", { threads: desired, preventDuplicates: true });
 
                 if (pid) {
                     if (owner) ownedWorker = pid;

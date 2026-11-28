@@ -258,10 +258,9 @@ async function jit6Dashboard(ns: NS): Promise<void> {
             await launchAndWait(ns, JIT6_DASHBOARD, []);
             return;
         case "Augmentation reset readiness": {
-            const reset = ns.getResetInfo();
-            if ((reset.currentNode === 4 || (reset.ownedSF.get(4) ?? 0) > 0) &&
-                await launchAndWait(ns, "bt4-detail.ts", ["--dry-run"])) return;
-            ns.tprint("See the in-game Augmentations panel for the queued list and reset preview.");
+            if (!await launchAndWait(ns, "bt4-detail.ts", ["--reset-summary"])) {
+                ns.tprint("See the in-game Augmentations panel for the queued list and reset preview.");
+            }
             return;
         }
         case "BitNode catalog":
@@ -760,16 +759,16 @@ function launch(
         return 0;
     }
 
-    if (["bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts"].includes(script)) {
+    if (script === "bt4-plan.ts" || script === "bt4-action.ts" || (script === "bt4-detail.ts" && !args.includes("--reset-summary"))) {
         const reset = ns.getResetInfo();
         if (reset.currentNode !== 4 && (reset.ownedSF.get(4) ?? 0) === 0) {
             ns.tprint("[BT4] Singularity unavailable. Select Basic snapshot.");
             return 0;
         }
-        if (script === "bt4-detail.ts" && !ns.fileExists("bt4.ts", "home")) {
-            ns.tprint("[BT4] Missing dependency bt4.ts.");
-            return 0;
-        }
+    }
+    if (script === "bt4-detail.ts" && !ns.fileExists("bt4.ts", "home")) {
+        ns.tprint("[BT4] Missing dependency bt4.ts.");
+        return 0;
     }
     if (script === "bt4-action.ts" || (script === JIT6_SUPPORT && args.includes("--execute"))) {
         const reserve = ns.getScriptRam("stopfarm.ts", "home");

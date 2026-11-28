@@ -10,7 +10,6 @@ const TRADER = "trader.ts";
 const TRADER_HOLD = ".7n8-mission-trader-hold.txt";
 const TRADER_DISABLED = ".7n8-trader-disabled.txt";
 const TRADER_DRAIN = ".7n8-trader-drain.txt";
-const SHARE_RESERVE_GB = 512;
 const WORK_OWNERS = new Set([FULL, STUDY, "bt4-action.ts", "mission.ts", "progression.ts", "findV2.ts"]);
 const CAPITAL_OWNERS = new Set([FULL, "bt4-action.ts", TRADER, "traderctl.ts", "fleet.ts", "mission.ts", UPGRADE]);
 const TICK_MS = 5_000;
@@ -205,7 +204,10 @@ export async function main(ns: NS): Promise<void> {
         if (ownedJob !== UPGRADE && !(cap > 0 && !upgradeAttempted && !ownedPid)) {
             for (const service of optional) {
                 if (servicePids.has(service) || deadline - Date.now() < TICK_MS) continue;
-                const admission = serviceAdmission(ns, service, emergency, reserve, ownedPid, disabledAtStart, reset.lastAugReset);
+                const pendingTrader = optional.includes(TRADER) && !servicePids.has(TRADER);
+                const admission = service === SHARE && available && !ownedPid && !workFinished
+                    ? "Waiting for player-work admission."
+                    : serviceAdmission(ns, service, emergency, reserve, ownedPid, disabledAtStart, reset.lastAugReset, pendingTrader);
                 if (typeof admission === "string") {
                     if (admission !== serviceReasons.get(service)) report(`${service}: ${admission}`);
                     serviceReasons.set(service, admission);
@@ -241,7 +243,7 @@ export async function main(ns: NS): Promise<void> {
 }
 
 function serviceAdmission(ns: NS, service: Service, emergency: number, reserve: number, workPid: number,
-    disabledAtStart: string | null, lastAugReset: number): (string | number)[] | string {
+    disabledAtStart: string | null, lastAugReset: number, pendingTrader: boolean): (string | number)[] | string {
     const running = ns.ps("home");
     const max = ns.getServerMaxRam("home");
     const free = max - ns.getServerUsedRam("home");
@@ -250,10 +252,12 @@ function serviceAdmission(ns: NS, service: Service, emergency: number, reserve: 
     if (service === SHARE) {
         if (running.some(p => p.filename === SHARE || p.filename === SHARE_WORKER)) return "An external Share service is active.";
         const workerRam = ns.getScriptRam(SHARE_WORKER, "home");
-        const shareReserve = Math.max(emergency, SHARE_RESERVE_GB);
+        // Leave room to reopen AP and inspect status even when they are closed at admission.
+        const traderRam = pendingTrader && !running.some(p => p.filename === TRADER) ? ns.getScriptRam(TRADER, "home") : 0;
+        const shareReserve = emergency + ns.getScriptRam("ap.ts", "home") + ns.getScriptRam("jit6-dashboard.ts", "home") + traderRam;
         if (!(workerRam > 0)) return "Sync share-worker.ts.";
-        if (Math.min(max * 0.75, free - ram - shareReserve) < 33 * workerRam) {
-            return `Waiting for room for the Share worker and ${shareReserve} GB of headroom.`;
+        if (Math.min(max * 0.75, free - ram - shareReserve) < workerRam) {
+            return `Waiting for room for one Share thread and ${shareReserve.toFixed(2)} GB of control headroom.`;
         }
         return ["--reserve", shareReserve, "--owner", ns.pid];
     }

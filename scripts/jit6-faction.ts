@@ -90,6 +90,7 @@ export async function main(ns: NS): Promise<void> {
 
         ns.tprint(JSON.stringify({
             faction, joined, rep, favor, workTypes, enemyFactions,
+            blockingMemberships: joined ? [] : enemyFactions.filter(enemy => player.factions.some(member => member === enemy)),
             installedCount: installed.length,
             queuedCount: queued.length - installed.length,
             requirements: requirements.map(requirement => ({

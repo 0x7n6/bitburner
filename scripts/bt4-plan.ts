@@ -23,6 +23,7 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
     }));
     const names = new Set(factions.flatMap(faction => faction.offers));
     names.delete("NeuroFlux Governor");
+    if (node === 15) names.delete("The Red Pill");
 
     const candidates = [...names].filter(name => !owned.has(name)).map(name => {
         const repRequired = ns.singularity.getAugmentationRepReq(name);
@@ -39,7 +40,7 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
         return {
             name,
             score,
-            mission: node === 4 && name === "The Red Pill",
+            mission: name === "The Red Pill",
             price: ns.singularity.getAugmentationPrice(name),
             missingPrerequisites: ns.singularity.getAugmentationPrereq(name).filter(prerequisite => !owned.has(prerequisite)),
             sellers,
@@ -84,13 +85,18 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
         aug.price <= available && player.money >= reserve && aug.sellers.some(seller => seller.repMissing === 0));
     const repTargets = candidates.filter(aug => aug.missingPrerequisites.length === 0 &&
         aug.sellers.length > 0 && aug.sellers.every(seller => seller.repMissing > 0))
-        .map(aug => ({
-            augmentation: aug.name,
-            useful: useful.has(aug.name),
-            affordable: aug.price <= available && player.money >= reserve,
-            seller: aug.sellers.find(seller => seller.work.length > 0),
-        }))
-        .filter(target => target.seller);
+        .flatMap(aug => {
+            const workSellers = aug.sellers.filter(seller => seller.work.length > 0);
+            if (workSellers.length === 0) return [];
+            return [{
+                augmentation: aug.name,
+                mission: aug.mission,
+                useful: useful.has(aug.name),
+                affordable: aug.price <= available && player.money >= reserve,
+                seller: workSellers[0],
+                workSellers,
+            }];
+        });
 
     return {
         cash: player.money,
