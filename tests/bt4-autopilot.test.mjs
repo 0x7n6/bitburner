@@ -76,6 +76,47 @@ test("existing player work is preserved", async () => {
     assert.deepEqual(state.events, []);
 });
 
+test("managed pilot immediately replaces a university course with eligible faction work", async () => {
+    const { ns, state } = fixture({ "replace-study": true });
+    state.work = { type: "CLASS", classType: "Computer Science", location: "Rothman University", nextCompletion: token() };
+    await main(ns);
+    assert.deepEqual(state.events, [["work", "CyberSec", "hacking", false]]);
+    assert.match(state.logs[0], /Replaced university study with hacking work/);
+});
+
+test("managed pilot reuses free study until faction work becomes worthwhile", async () => {
+    const { ns, state } = fixture({ "replace-study": true });
+    const original = { type: "CLASS", classType: "Computer Science", location: "Rothman University", nextCompletion: token() };
+    state.work = original;
+    state.rep = 100;
+    state.onTick = tick => {
+        if (tick !== 1) return;
+        assert.equal(state.work, original);
+        state.rep = 50;
+    };
+    await main(ns);
+    assert.deepEqual(state.events, [["work", "CyberSec", "hacking", false]]);
+    assert.match(state.logs[0], /Continued existing free Computer Science/);
+});
+
+test("managed pilot leaves non-university activity and rejected replacements alone", async () => {
+    const { ns, state } = fixture({ "replace-study": true });
+    const gym = { type: "CLASS", classType: "str", location: "Powerhouse Gym", nextCompletion: token() };
+    state.work = gym;
+    await main(ns);
+    assert.equal(state.work, gym);
+    assert.match(state.logs.at(-1), /externally owned/);
+    assert.equal(state.ticks, 0);
+
+    const classWork = { type: "CLASS", classType: "Computer Science", location: "Rothman University", nextCompletion: token() };
+    state.work = classWork;
+    ns.singularity.workForFaction = () => false;
+    await main(ns);
+    assert.equal(state.work, classWork);
+    assert.match(state.logs.at(-1), /Game rejected/);
+    assert.deepEqual(state.events, []);
+});
+
 test("an explicit JIT6 budget can queue purchases while manual work continues", async () => {
     const { ns, state } = fixture({ budget: 300, "wait-idle": true });
     state.rep = 100;

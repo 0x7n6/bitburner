@@ -22,8 +22,13 @@ Science when the full pilot does not fit and the purchase budget is zero.
 | Work and Share | Uses remaining home RAM after accounting for emergency controls and reopening AP and its dashboard |
 | Work and Trader | Starts a long-only Trader with TIX, 4S TIX and the approved cash floor |
 
-JIT6 waits for the player to be idle when an existing activity is in progress.
-If the player takes over work that JIT6 started, the work pilot yields. With
+When a managed session starts, JIT6 can switch an existing university course
+directly to eligible faction work or free Computer Science. If the active
+course is already the selected free class, the full pilot uses it as its
+current activity and keeps checking for faction work. Leaving a class in
+place after a rejected replacement preserves the player's current activity.
+Other activities at startup and manual changes during the session end the
+work pilot with a reason. With
 Formulas.exe, the pilot uses the current player and faction favor to find the
 quickest useful reputation unlock when starting a new goal. The Red Pill
 takes priority on the standard route. BN15 has a different source for it.
@@ -57,8 +62,8 @@ new BitNode.
 
 1. Sync `scripts/` and reopen AP. Check the current BitNode, Source-Files,
    active process names and free RAM under **JIT6 dashboard**.
-2. Start a work-only session while studying. Verify the existing activity
-   continues, then check work admission after the character is idle.
+2. Start a work-only session while studying. Verify that JIT6 reports reusing
+   the chosen course or switching to the eligible replacement.
 3. Try Share on a controlled save. Compare free RAM with the measured cost
    of `stopfarm.ts`, `ap.ts`, and `jit6-dashboard.ts`. Start and stop Trader in
    a separate controlled session and confirm the in-game cash floor.
@@ -73,6 +78,7 @@ measure script RAM or timing in a live game save.
 
 - [Official Netscript declarations for v3.0.1](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/ScriptEditor/NetscriptDefinitions.d.ts)
 - [Official faction eligibility and work](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Faction/FactionInfo.tsx)
+- [Official player activity replacement](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/PersonObjects/Player/PlayerObjectWorkMethods.ts#L5-L10)
 - [Official augmentation and reset mechanics](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Documentation/doc/en/basic/augmentations.md)
 - [Community faction work selection](../sources/alainbryden/work-for-factions.js) and [stock reservation/commission handling](../sources/alainbryden/stockmaster.js)
 - [Earlier mission coordinator documentation](https://github.com/0x7n6/bitburner/blob/7190bfcb52fac12c16e598dddf2f8bef66c7202f/docs/MISSION_COORDINATION.md)

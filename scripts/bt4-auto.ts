@@ -1,16 +1,11 @@
 import type { NS, Task } from "@ns";
 import { observeProgression } from "./bt4-plan.ts";
+import { isUniversityStudy, LOCAL_UNIVERSITIES } from "./jit6-study-policy.ts";
 
 const MAX_PURCHASES = 8;
 const CHECK_INTERVAL_MS = 5_000;
 const WORK_CONFLICTS = new Set(["bt4-action.ts", "progression.ts", "findV2.ts", "mission-study.ts"]);
 const SPENDING_CONFLICTS = new Set(["trader.ts", "traderctl.ts", "fleet.ts"]);
-const LOCAL_UNIVERSITIES = {
-    "Aevum": "Summit University",
-    "Sector-12": "Rothman University",
-    "Volhaven": "ZB Institute of Technology",
-} as const;
-
 type ReputationTarget = ReturnType<typeof observeProgression>["repTargets"][number];
 type FactionWorkType = ReputationTarget["seller"]["work"][number];
 
@@ -57,7 +52,10 @@ function chooseWork(ns: NS, targets: ReputationTarget[], unfocusedWorkRate: numb
 
 export async function main(ns: NS): Promise<void> {
     ns.disableLog("ALL");
-    const flags = ns.flags([["execute", false], ["reserve", -1], ["budget", 0], ["minutes", 15], ["deadline", 0], ["wait-idle", false]]);
+    const flags = ns.flags([
+        ["execute", false], ["reserve", -1], ["budget", 0], ["minutes", 15], ["deadline", 0],
+        ["wait-idle", false], ["replace-study", false],
+    ]);
     const execute = flags.execute === true;
     const reserve = Number(flags.reserve);
     const budget = Number(flags.budget);
@@ -101,6 +99,7 @@ export async function main(ns: NS): Promise<void> {
         while (Date.now() < deadline) {
             const live = ns.getResetInfo();
             const current = ns.singularity.getCurrentWork();
+            const replacingStudy = execute && flags["replace-study"] === true && ownedTask === null && isUniversityStudy(current);
             let waitingForIdle = false;
             if (execute) {
                 if (live.currentNode !== reset.currentNode || live.lastNodeReset !== reset.lastNodeReset ||
@@ -125,7 +124,7 @@ export async function main(ns: NS): Promise<void> {
                     return;
                 }
                 const currentToken = current?.nextCompletion ?? null;
-                if (currentToken !== ownedTask || (current !== null && currentToken === null)) {
+                if (!replacingStudy && (currentToken !== ownedTask || (current !== null && currentToken === null))) {
                     waitingForIdle = flags["wait-idle"] === true && ownedTask === null && current !== null;
                     if (!waitingForIdle) {
                         announce("Stopped because player work is externally owned or was cancelled.");
@@ -173,24 +172,31 @@ export async function main(ns: NS): Promise<void> {
                 purchases++;
                 announce(`Queued ${nextPurchase.name} for $${nextPurchase.price}; session spent $${spent}/$${budget}.`);
             } else if (!waitingForIdle) {
-                let started = false;
+                let changed = false;
                 if (work) {
                     if (current?.type === "FACTION" && current.factionName === work.faction &&
                         current.factionWorkType === work.type) {
                         workGoal = work.augmentation;
                     } else {
-                        started = ns.singularity.workForFaction(work.faction, work.type, false);
+                        changed = ns.singularity.workForFaction(work.faction, work.type, false);
                         workGoal = work.augmentation;
-                        if (!started) throw new Error(`Game rejected ${work.type} work for ${work.faction}.`);
-                        announce(`Started ${work.type} work for ${work.faction} toward ${workGoal}.`);
+                        if (!changed) throw new Error(`Game rejected ${work.type} work for ${work.faction}.`);
+                        const action = isUniversityStudy(current) ? "Replaced university study with" : "Started";
+                        announce(`${action} ${work.type} work for ${work.faction} toward ${workGoal}.`);
                     }
-                } else if (university && (current === null || current.type === "FACTION")) {
-                    started = ns.singularity.universityCourse(university, "Computer Science", false);
+                } else if (replacingStudy && current.classType === "Computer Science" && current.location === university) {
+                    const token = current.nextCompletion;
+                    if (!token || typeof token.then !== "function") throw new Error("Could not identify the current class.");
+                    ownedTask = token;
+                    announce(`Continued existing free Computer Science at ${university}. JIT6 can switch to useful faction work.`);
+                } else if (university && (current === null || current.type === "FACTION" || replacingStudy)) {
+                    changed = ns.singularity.universityCourse(university, "Computer Science", false);
                     workGoal = null;
-                    if (!started) throw new Error(`Game rejected free Computer Science at ${university}.`);
-                    announce(`Started free Computer Science at ${university}.`);
+                    if (!changed) throw new Error(`Game rejected free Computer Science at ${university}.`);
+                    const action = replacingStudy ? "Replaced university study with" : "Started";
+                    announce(`${action} free Computer Science at ${university}.`);
                 }
-                if (started) {
+                if (changed) {
                     const token = ns.singularity.getCurrentWork()?.nextCompletion;
                     if (!token || typeof token.then !== "function" || token === ownedTask) {
                         throw new Error("Could not establish the identity of started player work.");

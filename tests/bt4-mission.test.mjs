@@ -18,6 +18,7 @@ function fixture(flags = {}) {
     };
     const ns = {
         pid: 20,
+        args: [],
         disableLog: () => {},
         flags: () => ({ start: false, resume: false, minutes: 15, budget: 0, reserve: 0, _: [], ...flags }),
         getResetInfo: () => ({
@@ -116,6 +117,22 @@ test("lightweight study starts at the local university and preserves active work
     state.work = null;
     await study(ns);
     assert.deepEqual(state.courses, [["Rothman University", "Computer Science", false]]);
+});
+
+test("managed lightweight study keeps matching work and replaces a different university course", async () => {
+    const { ns, state } = fixture();
+    ns.args = ["--replace-study"];
+    state.work = { type: "CLASS", location: "Rothman University", classType: "Computer Science" };
+    await study(ns);
+    assert.deepEqual(state.courses, []);
+    assert.match(state.logs.at(-1), /already active/);
+    state.work = { type: "CLASS", location: "Powerhouse Gym", classType: "str" };
+    await study(ns);
+    assert.deepEqual(state.courses, []);
+    state.work = { type: "CLASS", location: "Rothman University", classType: "Algorithms" };
+    await study(ns);
+    assert.deepEqual(state.courses, [["Rothman University", "Computer Science", false]]);
+    assert.match(state.logs.at(-1), /Replaced university study/);
 });
 
 test("resuming uses only the remainder of the session and no financial services", async context => {

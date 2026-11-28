@@ -1,5 +1,5 @@
 import type { NS } from "@ns";
-import { BIT_NODES, bitNodeCatalog, factionCatalog, factionOverview, findFaction } from "./bitburner-catalog.ts";
+import { BIT_NODES, FACTIONS, bitNodeCatalog, factionCatalog, factionOverview, findFaction } from "./bitburner-catalog.ts";
 
 type ScriptArg = string | number | boolean;
 
@@ -201,7 +201,7 @@ function showStatus(ns: NS): void {
 async function choose(
     ns: NS,
     title: string,
-    choices: string[]
+    choices: readonly string[]
 ): Promise<string> {
     const result = await ns.prompt(title, {
         type: "select",
@@ -279,7 +279,12 @@ async function jit6Dashboard(ns: NS): Promise<void> {
                 return;
             }
             const level = node === 12 ? await askNonnegative(ns, "BN12 level to inspect (1 or higher)") : 1;
-            if (level !== null) await launchAndWait(ns, "jit6-multipliers.ts", [node, level]);
+            if (level === null) return;
+            if (!Number.isSafeInteger(level) || level < 1) {
+                ns.tprint("[JIT6] Enter a whole BN12 level of 1 or higher.");
+                return;
+            }
+            await launchAndWait(ns, "jit6-multipliers.ts", [node, level]);
             return;
         }
         case "Faction catalog":
@@ -434,7 +439,9 @@ async function jit6Support(ns: NS): Promise<void> {
         args.push("--trader", "--reserve", reserve);
         prompt = `Start ${minutes} min of work${share ? ", Share" : ""} and long-only Trader with a $${reserve.toLocaleString()} cash floor?`;
     }
-    if (await ns.prompt(prompt, { type: "boolean" }) === true) launch(ns, JIT6_SUPPORT, args);
+    if (await ns.prompt(`${prompt} JIT6 may switch the current university course.`, { type: "boolean" }) === true) {
+        launch(ns, JIT6_SUPPORT, args);
+    }
 }
 
 async function mission(ns: NS): Promise<void> {
@@ -456,9 +463,15 @@ async function mission(ns: NS): Promise<void> {
             return;
         }
         case "Start faction work": {
-            const faction = await choose(ns, "Joined faction", ns.getPlayer().factions);
-            if (faction === "Back") return;
-            const work = await choose(ns, "Work type (see plan for available types)", ["hacking", "field", "security"]);
+            const factions = ns.getPlayer().factions.filter(faction => FACTIONS[faction]?.work.length);
+            if (factions.length === 0) {
+                ns.tprint("[BT4] No joined faction offers standard work. See Faction details.");
+                return;
+            }
+            const selected = await choose(ns, "Joined faction", factions);
+            const faction = factions.find(name => name === selected);
+            if (!faction) return;
+            const work = await choose(ns, `${faction} work type`, FACTIONS[faction].work);
             if (work !== "Back") await launchAndWait(ns, "bt4-action.ts", ["work", faction, work]);
             return;
         }

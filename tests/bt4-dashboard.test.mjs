@@ -131,18 +131,56 @@ test("multiplier view uses the requested BN12 level and honors the SF5 gate", as
     assert.match(output.at(-2), /BN12, level 7/);
 });
 
-test("AP catalogs and offline faction guides work without spawning helper scripts", async () => {
-    const { reset, player } = snapshot(1);
-    const prompts = ["JIT6 dashboard", "BitNode catalog", "JIT6 dashboard", "Faction details", "Daedalus", "Exit"];
+function apFixture(prompts, node = 4) {
+    const { reset, player } = snapshot(node);
     const output = [];
+    const menus = [];
+    const launches = [];
     const ns = {
-        disableLog: () => {}, prompt: async () => prompts.shift(), sleep: async () => {},
-        getResetInfo: () => reset, getServer: () => ({ maxRam: 8, ramUsed: 8 }), ps: () => [],
+        disableLog: () => {}, sleep: async () => {},
+        prompt: async (title, { choices }) => {
+            menus.push({ title, choices });
+            assert.ok(prompts.length, `Unexpected prompt: ${title}`);
+            const answer = prompts.shift();
+            if (choices) assert.ok(choices.includes(answer), `${answer} was not offered in ${title}`);
+            return answer;
+        },
+        getResetInfo: () => reset, getServer: () => ({ maxRam: 128, ramUsed: 8 }), ps: () => [],
+        getScriptRam: () => 5, getServerMaxRam: () => 128, getServerUsedRam: () => 8, isRunning: () => false,
         getPlayer: () => player, format: { number: () => "32.7b" }, getServerMoneyAvailable: () => player.money,
-        getHackingLevel: () => player.skills.hacking, fileExists: () => false, tprint: line => output.push(line),
+        getHackingLevel: () => player.skills.hacking, fileExists: name => name.endsWith(".ts"), tprint: line => output.push(line),
+        exec: (script, _host, _threads, ...args) => launches.push([script, ...args]),
     };
+    return { ns, player, output, menus, launches };
+}
+
+test("AP catalogs and offline faction guides work without spawning helper scripts", async () => {
+    const { ns, output, launches } = apFixture([
+        "JIT6 dashboard", "BitNode catalog", "JIT6 dashboard", "Faction details", "Daedalus", "Exit",
+    ], 1);
+    ns.fileExists = () => false;
     await ap(ns);
     assert.match(output.join("\n"), /BN1 \[current\].*Source Genesis/);
     assert.match(output.join("\n"), /Daedalus.*endgame/);
     assert.match(output.join("\n"), /node-specific installed augmentation count/);
+    assert.deepEqual(launches, []);
+});
+
+test("AP offers the standard work types of joined factions", async () => {
+    const { ns, player, menus, launches } = apFixture([
+        "Progression tools", "Start faction work", "Slum Snakes", "field", "Exit",
+    ]);
+    player.factions.push("Bladeburners");
+    await ap(ns);
+    assert.deepEqual(menus.find(menu => menu.title === "Joined faction").choices, ["Slum Snakes", "Back"]);
+    assert.deepEqual(menus.find(menu => menu.title === "Slum Snakes work type").choices, ["field", "security", "Back"]);
+    assert.deepEqual(launches, [["bt4-action.ts", "work", "Slum Snakes", "field"]]);
+});
+
+test("AP rejects invalid BN12 levels before launching the multiplier viewer", async () => {
+    const route = ["JIT6 dashboard", "BitNode multipliers", "12"];
+    const { ns, output, launches } = apFixture([...route, "0", ...route, "1.5", ...route, "7", "Exit"]);
+    await ap(ns);
+    assert.equal(output.filter(line => line.includes("Enter a whole BN12 level of 1 or higher")).length, 2);
+    assert.deepEqual(launches, [["jit6-multipliers.ts", 12, 7]]);
 });

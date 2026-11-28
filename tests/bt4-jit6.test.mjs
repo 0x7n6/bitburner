@@ -97,6 +97,19 @@ test("preview remains read-only even with upgrade flags", async context => {
     assert.match(state.logs.at(-1), /Next: jit6-home/);
 });
 
+test("preview and execution both report a competing supervisor", async context => {
+    const flags = { execute: false };
+    const { ns, state } = fixture(context, flags);
+    state.processes = [{ filename: "jit6.ts", pid: 21, args: ["--execute"] }];
+    await schedule(ns);
+    assert.match(state.logs.at(-1), /Next: wait \| Another supervisor is active: jit6\.ts/);
+
+    flags.execute = true;
+    await schedule(ns);
+    assert.match(state.logs.at(-1), /Another supervisor is active: jit6\.ts/);
+    assert.deepEqual(state.launches, []);
+});
+
 test("waits until RAM frees, then launches full work against the original deadline", async context => {
     const { ns, state } = fixture(context);
     state.used = 119;
@@ -106,7 +119,7 @@ test("waits until RAM frees, then launches full work against the original deadli
     };
     await schedule(ns);
     assert.equal(state.launches.length, 1);
-    assert.deepEqual(state.launches[0].args, ["--execute", "--minutes", 1, "--deadline", 61000, "--wait-idle",
+    assert.deepEqual(state.launches[0].args, ["--execute", "--minutes", 1, "--deadline", 61000, "--replace-study",
         "--reserve", 0, "--budget", 0]);
     assert.match(state.logs[0], /No ready tool fits/);
 });

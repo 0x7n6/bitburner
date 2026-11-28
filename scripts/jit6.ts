@@ -132,6 +132,11 @@ export async function main(ns: NS): Promise<void> {
         const paused = ns.fileExists(PAUSE, "home");
         const competingScheduler = running.find(p => ["daemon.ts", "bootstrap.ts"].includes(p.filename) ||
             (p.filename === "jit6.ts" && p.pid !== ns.pid && p.args.includes("--execute")));
+        const blocker = paused ? "OS is paused." :
+            competingScheduler ? `Another supervisor is active: ${competingScheduler.filename}.` :
+            !available && !optional.length ? "Singularity is locked. Use the game UI for player work." :
+            !(emergency > 0) ? "Emergency control script cost unavailable. Sync stopfarm.ts." :
+            free < emergency ? "Emergency RAM unavailable." : null;
         const snapshot: Snapshot = {
             paused, available, free, emergency, homeRam,
             costs: {
@@ -145,17 +150,17 @@ export async function main(ns: NS): Promise<void> {
         };
 
         if (!execute) {
-            const plan = planAdmission(snapshot, target, false, augmentCap);
-            const engine = running.filter(p => ["jit5.ts", "early.ts", "harvest.ts"].includes(p.filename))
+            const plan = blocker ? { job: null, reason: blocker } : planAdmission(snapshot, target, false, augmentCap);
+            const legacyEngine = running.filter(p => ["jit5.ts", "early.ts", "harvest.ts"].includes(p.filename))
                 .map(p => `${p.filename} PID ${p.pid}`).join(", ");
-            report(`Preview | engine=${engine || "none on home"} | home=${homeRam} GB | free=${free.toFixed(2)} GB | emergency=${emergency.toFixed(2)} GB.`);
+            report(`Preview | legacy engine=${legacyEngine || "none on home"} | home=${homeRam} GB | free=${free.toFixed(2)} GB | emergency=${emergency.toFixed(2)} GB.`);
             report(`Next: ${plan.job ?? "wait"} | ${plan.reason}`);
+            if (plan.job === FULL || plan.job === STUDY) report("Scheduled player work can replace an ongoing university course.");
             if (optional.length) report(`Requested services: ${optional.join(", ")}. Session admission checks live availability and reserve.`);
             return;
         }
-        if (paused || (!available && !optional.length) || !(emergency > 0) || free < emergency || competingScheduler) {
-            report(paused ? "OS is paused." : competingScheduler ? `Another supervisor is active: ${competingScheduler.filename}.` :
-                !available && !optional.length ? "Singularity is locked. Use the game UI for player work." : "Emergency RAM unavailable. Ending session.");
+        if (blocker) {
+            report(blocker);
             return;
         }
 
@@ -179,10 +184,10 @@ export async function main(ns: NS): Promise<void> {
             if (decision.job) {
                 const job = decision.job;
                 const args = job === FULL
-                    ? ["--execute", "--minutes", minutes, "--deadline", deadline, "--wait-idle", "--reserve", reserve, "--budget", augmentCap]
+                    ? ["--execute", "--minutes", minutes, "--deadline", deadline, "--replace-study", "--reserve", reserve, "--budget", augmentCap]
                     : job === UPGRADE
                         ? [cap, reserve, target, deadline, reset.currentNode, reset.lastNodeReset, reset.lastAugReset]
-                        : [];
+                        : ["--replace-study"];
                 // Fixed job choices keep execution inside the support scheduler's work and capital policy.
                 const pid = ns.exec(job, "home", { threads: 1, preventDuplicates: true }, ...args);
                 if (pid) {
