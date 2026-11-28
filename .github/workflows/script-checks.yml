@@ -1,0 +1,53 @@
+name: Script checks
+
+on:
+  push:
+    paths:
+      - 'scripts/**'
+      - 'helper/check-python.py'
+      - 'tests/bt4-progression.test.mjs'
+      - '.github/workflows/script-checks.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - '!**/*.md'
+  pull_request:
+    paths:
+      - 'scripts/**'
+      - 'helper/check-python.py'
+      - 'tests/bt4-progression.test.mjs'
+      - '.github/workflows/script-checks.yml'
+      - 'package.json'
+      - 'package-lock.json'
+      - 'tsconfig.json'
+      - '!**/*.md'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  syntax-and-types:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Compile tracked Python source
+        run: python3 helper/check-python.py
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+      - name: Download and verify Netscript declarations
+        run: |
+          curl --fail --silent --show-error --location --retry 3 \
+            https://raw.githubusercontent.com/bitburner-official/bitburner-src/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/ScriptEditor/NetscriptDefinitions.d.ts \
+            --output NetScriptDefinitions.d.ts
+          echo 'bfabb0f495cc89133ba042420f5d6d514c7f068502565e3bc5f90da5e60242ed  NetScriptDefinitions.d.ts' | sha256sum --check
+      - name: Typecheck Netscript
+        run: npm run typecheck
+      - name: Test BT4 progression guards
+        run: node --disable-warning=MODULE_TYPELESS_PACKAGE_JSON --test tests/bt4-progression.test.mjs

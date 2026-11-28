@@ -5,6 +5,10 @@ type ScriptArg = string | number | boolean;
 const MODE_FILE = ".7n8-engine-mode.txt";
 const PAUSE_FILE = ".7n8-pause.txt";
 
+const MISSION_TOOLS = new Set([
+    "bt4.ts", "bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts",
+]);
+
 const ENGINES = [
     "early.ts",
     "jit5.ts",
@@ -41,6 +45,7 @@ export async function main(ns: NS): Promise<void> {
                     "OS lifecycle",
                     "Economic engines",
                     "Network intelligence",
+                    "BN4 mission",
                     "Capital management",
                     "System services",
                     "Universal script launcher",
@@ -63,6 +68,10 @@ export async function main(ns: NS): Promise<void> {
 
             case "Network intelligence":
                 await network(ns);
+                break;
+
+            case "BN4 mission":
+                await mission(ns);
                 break;
 
             case "Capital management":
@@ -399,6 +408,66 @@ async function network(ns: NS): Promise<void> {
     if (choice === "Neofetch") {
         await launchAndWait(ns, "neofetch.ts", []);
     }
+}
+
+async function mission(ns: NS): Promise<void> {
+    const choice = await choose(ns, "BN4 mission", [
+        "Basic snapshot",
+        "Singularity detail",
+        "Plan progression",
+        "Start faction work",
+        "Buy one augmentation",
+        "Upgrade home RAM",
+    ]);
+
+    switch (choice) {
+        case "Basic snapshot":
+            await launchAndWait(ns, "bt4.ts", ["--dry-run"]);
+            return;
+        case "Singularity detail":
+            await launchAndWait(ns, "bt4-detail.ts", ["--dry-run"]);
+            return;
+        case "Plan progression": {
+            const floor = await askNonnegative(ns, "Cash reserve for planning (game dollars)");
+            if (floor !== null) await launchAndWait(ns, "bt4-plan.ts", ["--reserve", floor]);
+            return;
+        }
+        case "Start faction work": {
+            const faction = await choose(ns, "Joined faction", ns.getPlayer().factions);
+            if (faction === "Back") return;
+            const work = await choose(ns, "Work type (see plan for available types)", ["hacking", "field", "security"]);
+            if (work !== "Back") await launchAndWait(ns, "bt4-action.ts", ["work", faction, work]);
+            return;
+        }
+        case "Buy one augmentation":
+        case "Upgrade home RAM": {
+            const args: ScriptArg[] = [];
+            if (choice === "Buy one augmentation") {
+                const faction = await choose(ns, "Seller faction", ns.getPlayer().factions);
+                if (faction === "Back") return;
+                const augmentation = await ask(ns, "Exact augmentation name from the progression plan");
+                if (!augmentation) return;
+                args.push("augmentation", faction, augmentation);
+            } else {
+                args.push("home-ram");
+            }
+            const budget = await askNonnegative(ns, "Maximum price for this purchase (game dollars)");
+            if (budget === null) return;
+            const floor = await askNonnegative(ns, "Cash to keep after this purchase (game dollars)");
+            if (floor !== null) await launchAndWait(ns, "bt4-action.ts", [...args, budget, floor]);
+        }
+    }
+}
+
+async function askNonnegative(ns: NS, title: string): Promise<number | null> {
+    const input = await ask(ns, title);
+    if (input === null) return null;
+    const value = Number(input);
+    if (input === "" || !Number.isFinite(value) || value < 0) {
+        ns.tprint("[BT4] Enter a finite, nonnegative number.");
+        return null;
+    }
+    return value;
 }
 
 async function capital(ns: NS): Promise<void> {
@@ -752,6 +821,29 @@ function launch(
         );
 
         return 0;
+    }
+
+    if (MISSION_TOOLS.has(script)) {
+        if (script !== "bt4.ts") {
+            const reset = ns.getResetInfo();
+            if (reset.currentNode !== 4 && (reset.ownedSF.get(4) ?? 0) === 0) {
+                ns.tprint("[BT4] Singularity unavailable; select Basic snapshot.");
+                return 0;
+            }
+            if (script === "bt4-detail.ts" && !ns.fileExists("bt4.ts", "home")) {
+                ns.tprint("[BT4] Missing dependency bt4.ts.");
+                return 0;
+            }
+        }
+        const reserve = ns.getScriptRam("stopfarm.ts", "home");
+        if (reserve <= 0 || free - required < reserve) {
+            ns.tprint(`[BT4] Admission refused: required=${required.toFixed(2)} GB, free=${free.toFixed(2)} GB, emergency=${reserve.toFixed(2)} GB. Missing/invalid stopfarm.ts also blocks admission.`);
+            return 0;
+        }
+        if (running.some(p => MISSION_TOOLS.has(p.filename))) {
+            ns.tprint("[BT4] A mission tool is already running.");
+            return 0;
+        }
     }
 
     const pid = ns.exec(script, "home", 1, ...args);
