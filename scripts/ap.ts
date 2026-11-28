@@ -6,9 +6,10 @@ const MODE_FILE = ".7n8-engine-mode.txt";
 const PAUSE_FILE = ".7n8-pause.txt";
 
 const BT4_AUTO = "bt4-auto.ts";
+const JIT6_SUPPORT = "jit6.ts";
 
 const MISSION_TOOLS = new Set([
-    "bt4.ts", "bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts", "mission.ts", "mission-study.ts", BT4_AUTO,
+    "bt4.ts", "bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts", "mission.ts", "mission-study.ts", BT4_AUTO, JIT6_SUPPORT,
 ]);
 
 const ENGINES = [
@@ -49,6 +50,7 @@ export async function main(ns: NS): Promise<void> {
                     "Network intelligence",
                     "BN4 mission",
                     "Mission coordination",
+                    "JIT6 support scheduler",
                     "Capital management",
                     "System services",
                     "Universal script launcher",
@@ -71,6 +73,10 @@ export async function main(ns: NS): Promise<void> {
 
             case "Network intelligence":
                 await network(ns);
+                break;
+
+            case "JIT6 support scheduler":
+                await jit6Support(ns);
                 break;
 
             case "Mission coordination":
@@ -122,7 +128,7 @@ function showStatus(ns: NS): void {
         reset.currentNode === 4 || sf4 > 0;
 
     const engine = running
-        .filter(p => ENGINES.includes(p.filename) || p.filename === "jit6.ts")
+        .filter(p => ENGINES.includes(p.filename))
         .map(p => p.filename)
         .join(", ");
 
@@ -194,6 +200,7 @@ function showStatus(ns: NS): void {
     ns.tprint(`Engine     : ${engine || "IDLE"}`);
     ns.tprint(`Daemon     : ${status("daemon.ts")}`);
     ns.tprint(`BT4 AUTO   : ${status(BT4_AUTO)}`);
+    ns.tprint(`JIT6 Support: ${status(JIT6_SUPPORT)}`);
     ns.tprint(`Progression: ${status("progression.ts")}`);
     ns.tprint(`Share      : ${status("share.ts")}`);
     ns.tprint(`Trader     : ${status("trader.ts")}`);
@@ -416,6 +423,44 @@ async function network(ns: NS): Promise<void> {
     if (choice === "Neofetch") {
         await launchAndWait(ns, "neofetch.ts", []);
     }
+}
+
+async function jit6Support(ns: NS): Promise<void> {
+    const choice = await choose(ns, "JIT6 support scheduler", [
+        "Preview admission", "Resume support only", "Start work session",
+        "Start work with one home upgrade", "Stop JIT6 support",
+    ]);
+    if (choice === "Back") return;
+    if (choice === "Preview admission") {
+        await launchAndWait(ns, JIT6_SUPPORT, []);
+        return;
+    }
+    if (choice === "Resume support only") {
+        await launchAndWait(ns, "stopfarm.ts", ["--resume", "--support-only"]);
+        return;
+    }
+    if (choice === "Stop JIT6 support") {
+        const pilot = ns.ps("home").find(p => p.filename === JIT6_SUPPORT && p.args.includes("--execute"));
+        if (!pilot) {
+            ns.tprint("[JIT6 SUPPORT] Offline.");
+        } else if (await ns.prompt("Stop this scheduler session? Existing player activity continues.", { type: "boolean" }) === true) {
+            ns.tprint(ns.kill(pilot.pid) ? "[JIT6 SUPPORT] Stopped." : "[JIT6 SUPPORT] Scheduler already exited.");
+        }
+        return;
+    }
+
+    const args: ScriptArg[] = ["--execute"];
+    let prompt = "Start up to 15 minutes of player-work scheduling with no purchases?";
+    if (choice === "Start work with one home upgrade") {
+        const cap = await askNonnegative(ns, "Maximum price for one home RAM upgrade (game dollars)");
+        if (!cap) return;
+        const reserve = await askNonnegative(ns, "Minimum cash to keep (game dollars)");
+        if (reserve === null) return;
+        const target = ns.getServerMaxRam("home") * 2;
+        args.push("--home-target", target, "--home-cap", cap, "--reserve", reserve);
+        prompt = `Allow one upgrade toward ${target} GB, at most $${cap.toLocaleString()}, keeping $${reserve.toLocaleString()} cash?`;
+    }
+    if (await ns.prompt(prompt, { type: "boolean" }) === true) launch(ns, JIT6_SUPPORT, args);
 }
 
 async function missionCoordination(ns: NS): Promise<void> {
@@ -899,7 +944,7 @@ function launch(
     }
 
     if (MISSION_TOOLS.has(script)) {
-        if (script !== "bt4.ts" && script !== "mission.ts") {
+        if (script !== "bt4.ts" && script !== "mission.ts" && script !== JIT6_SUPPORT) {
             const reset = ns.getResetInfo();
             if (reset.currentNode !== 4 && (reset.ownedSF.get(4) ?? 0) === 0) {
                 ns.tprint("[BT4] Singularity unavailable; select Basic snapshot.");
@@ -919,8 +964,9 @@ function launch(
             ns.tprint(`[BT4] Admission refused: required=${required.toFixed(2)} GB, free=${free.toFixed(2)} GB, emergency=${reserve.toFixed(2)} GB. Missing/invalid stopfarm.ts also blocks admission.`);
             return 0;
         }
-        if (running.some(p => MISSION_TOOLS.has(p.filename) &&
-            (p.filename !== BT4_AUTO || script === BT4_AUTO || script === "bt4-action.ts"))) {
+        if (script !== JIT6_SUPPORT && running.some(p => MISSION_TOOLS.has(p.filename) &&
+            (p.filename !== BT4_AUTO || script === BT4_AUTO || script === "bt4-action.ts") &&
+            (p.filename !== JIT6_SUPPORT || script === BT4_AUTO || script === "bt4-action.ts"))) {
             ns.tprint("[BT4] A mission tool is already running.");
             return 0;
         }

@@ -20,8 +20,15 @@ export async function main(
         ns.flags([
             ["resume", false],
             ["os", false],
+            ["support-only", false],
+            ["verbose", false],
         ]);
 
+    if (flags["support-only"]) {
+        if (flags.resume && !flags.os) resumeSupportOnly(ns);
+        else ns.tprint("Use --resume --support-only to resume support work.");
+        return;
+    }
     if (flags.resume) {
         await resumeOS(ns);
         return;
@@ -45,6 +52,8 @@ export async function main(
 
     const victims =
         new Set([
+            "jit6.ts",
+            "jit6-home.ts",
             "mission.ts",
             "mission-study.ts",
             "bt4-auto.ts",
@@ -117,6 +126,12 @@ export async function main(
     }
 
     let killed = 0;
+    const counts = new Map<string, number>();
+    const markStopped = (process: { filename: string; pid: number }, host: string) => {
+        killed++;
+        counts.set(process.filename, (counts.get(process.filename) ?? 0) + 1);
+        if (flags.verbose || host === "home") ns.tprint(`KILL ${process.pid} ${process.filename} @ ${host}`);
+    };
 
     // Stop supervisors before taking process snapshots.
     // Otherwise a supervisor could recreate a service.
@@ -126,11 +141,7 @@ export async function main(
                 if (proc.filename !== filename) continue;
 
                 if (ns.kill(proc.pid)) {
-                    killed++;
-
-                    ns.tprint(
-                        `KILL ${proc.pid} ${filename} @ home`
-                    );
+                    markStopped(proc, "home");
                 }
             }
         }
@@ -164,12 +175,7 @@ export async function main(
                     proc.pid
                 )
             ) {
-                killed++;
-
-                ns.tprint(
-                    `KILL ${proc.pid} ` +
-                    `${proc.filename} @ ${host}`
-                );
+                markStopped(proc, host);
             }
         }
     }
@@ -182,6 +188,9 @@ export async function main(
             : `7n8 OS PAUSED | farm processes killed=${killed}`
     );
 
+    if (counts.size) {
+        ns.tprint(`Stopped by script: ${[...counts].map(([file, count]) => `${file}=${count}`).join(", ")}`);
+    }
     ns.tprint("Player activity continues. Mission Trader positions are held.");
     ns.tprint("Only an unexpired player-work policy can be resumed.");
 
@@ -190,6 +199,15 @@ export async function main(
     );
 }
 
+
+function resumeSupportOnly(ns: NS): void {
+    if (ns.ps("home").some(p => p.filename === DAEMON || p.filename === BOOTSTRAP)) {
+        ns.tprint("[JIT6 SUPPORT] A supervisor is running. Support-only resume needs it offline.");
+        return;
+    }
+    if (ns.fileExists(PAUSE_FILE, "home")) ns.rm(PAUSE_FILE, "home");
+    ns.tprint("[JIT6 SUPPORT] Support unpaused. Use AP to start a new support session.");
+}
 
 async function resumeOS(
     ns: NS

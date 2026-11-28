@@ -46,11 +46,31 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
         };
     });
 
-    // Give incomplete prerequisite chains visibility even when the first item has weak stats.
+    const catalog = new Map(candidates.map(candidate => [candidate.name, candidate]));
+    const useful = new Set<string>();
     const unlocks = new Map<string, number>();
-    for (const candidate of candidates) {
-        for (const prerequisite of candidate.missingPrerequisites) {
-            unlocks.set(prerequisite, (unlocks.get(prerequisite) ?? 0) + 1);
+
+    // Mark prerequisites only when the whole visible chain ends in a useful goal.
+    // A missing offer or a cycle blocks that goal without marking its partial chain.
+    function prerequisites(name: string, visiting: Set<string>, chain: Set<string>): boolean {
+        const candidate = catalog.get(name);
+        if (!candidate || visiting.has(name)) return false;
+        if (chain.has(name)) return true;
+        visiting.add(name);
+        for (const requirement of candidate.missingPrerequisites) {
+            if (!prerequisites(requirement, visiting, chain)) return false;
+        }
+        visiting.delete(name);
+        chain.add(name);
+        return true;
+    }
+
+    for (const goal of candidates.filter(candidate => candidate.mission || candidate.score > 0)) {
+        const chain = new Set<string>();
+        if (!prerequisites(goal.name, new Set(), chain)) continue;
+        for (const name of chain) {
+            useful.add(name);
+            if (name !== goal.name) unlocks.set(name, (unlocks.get(name) ?? 0) + 1);
         }
     }
     const rank = (a: typeof candidates[number], b: typeof candidates[number]) =>
@@ -66,7 +86,7 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
         aug.sellers.length > 0 && aug.sellers.every(seller => seller.repMissing > 0))
         .map(aug => ({
             augmentation: aug.name,
-            useful: aug.mission || aug.score > 0 || unlocks.has(aug.name),
+            useful: useful.has(aug.name),
             affordable: aug.price <= available && player.money >= reserve,
             seller: aug.sellers.find(seller => seller.work.length > 0),
         }))
@@ -78,7 +98,7 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
         available,
         installedCount: installed.length,
         queuedCount: purchased.length - installed.length,
-        ready: ready.map(aug => ({ ...aug, useful: aug.mission || aug.score > 0 || unlocks.has(aug.name) })),
+        ready: ready.map(aug => ({ ...aug, useful: useful.has(aug.name) })),
         repTargets,
         candidates,
     };
@@ -113,7 +133,7 @@ export async function main(ns: NS): Promise<void> {
         prerequisiteBlocked: plan.candidates.filter(aug => aug.missingPrerequisites.length > 0).slice(0, 12),
         guidance: [
             "Re-plan after each purchase. Prices are live quotes for this queue, not combined estimates.",
-            "Scores weight progression multipliers and prerequisite demand. Reputation targets show gaps, not time estimates.",
+            "Scores weight progression multipliers and prerequisites for reachable goals. Reputation targets show gaps, not time estimates.",
             "Choose a purchase or background faction work through AP. The action task asks for approval.",
         ],
     }, null, 2));

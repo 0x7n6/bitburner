@@ -162,3 +162,16 @@ test("deadline stops the controller and leaves player work running", async conte
     assert.equal(state.work.type, "FACTION");
     assert.match(state.logs.at(-1), /Session ended/);
 });
+
+test("scheduler child waits while manual work is active and stops after manual takeover", async () => {
+    const { ns, state } = fixture({ "wait-idle": true });
+    state.work = { type: "CRIME", nextCompletion: token() };
+    state.onTick = tick => {
+        if (tick === 2) state.work = null;
+        if (tick === 3) state.work = { type: "CRIME", nextCompletion: token() };
+    };
+    await main(ns);
+    assert.deepEqual(state.events, [["work", "CyberSec", "hacking", false]]);
+    assert.match(state.logs[0], /Waiting for idle/);
+    assert.match(state.logs.at(-1), /externally owned/);
+});

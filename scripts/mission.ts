@@ -59,7 +59,7 @@ export async function main(ns: NS): Promise<void> {
     const emergency = ns.getScriptRam("stopfarm.ts", "home");
     const free = Math.max(0, home.maxRam - home.ramUsed);
     const running = ns.ps("home");
-    const engines = running.filter(p => ["early.ts", "jit5.ts", "jit6.ts", "harvest.ts"].includes(p.filename));
+    const engines = running.filter(p => ["early.ts", "jit5.ts", "harvest.ts"].includes(p.filename));
     const owner = running.find(p => WORK_OWNERS.has(p.filename));
     const spender = running.find(p => CAPITAL_OWNERS.has(p.filename));
     const paused = ns.fileExists(PAUSE, "home");
@@ -84,6 +84,11 @@ export async function main(ns: NS): Promise<void> {
         report("Player-work automation is verified for Bitburner 3.0.1 (3162fd2).");
         return;
     }
+    if (start && running.some(p => p.filename === "jit6.ts" && p.args.includes("--execute"))) {
+        report("JIT6 support owns player-work admission. Stop it before starting a separate work policy.");
+        return;
+    }
+
     if (paused || owner || !(emergency > 0)) {
         report(paused ? "Resume the OS before starting a mission." :
             owner ? `Wait until ${owner.filename} exits before starting another work policy.` :

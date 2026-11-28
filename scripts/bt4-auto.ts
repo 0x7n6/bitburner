@@ -13,13 +13,15 @@ const LOCAL_UNIVERSITIES = {
 
 export async function main(ns: NS): Promise<void> {
     ns.disableLog("ALL");
-    const flags = ns.flags([["execute", false], ["reserve", -1], ["budget", 0], ["minutes", 15]]);
+    const flags = ns.flags([["execute", false], ["reserve", -1], ["budget", 0], ["minutes", 15], ["deadline", 0], ["wait-idle", false]]);
     const execute = flags.execute === true;
     const reserve = Number(flags.reserve);
     const budget = Number(flags.budget);
     const minutes = Number(flags.minutes);
+    const externalDeadline = Number(flags.deadline ?? 0);
     const announce = (message: string) => ns.tprint(`[BT4 AUTO] ${message}`);
     if (!Number.isFinite(reserve) || reserve < 0 || !Number.isFinite(budget) || budget < 0 ||
+        !Number.isFinite(externalDeadline) || externalDeadline < 0 ||
         !Number.isInteger(minutes) || minutes < 1 || minutes > 120 || (Array.isArray(flags._) && flags._.length)) {
         announce("Supply --reserve >=0, optionally --budget >=0 and --minutes 1–120. Add --execute to act.");
         return;
@@ -33,8 +35,14 @@ export async function main(ns: NS): Promise<void> {
         return;
     }
 
-    const deadline = Date.now() + minutes * 60_000;
+    const limit = Date.now() + minutes * 60_000;
+    const deadline = externalDeadline > 0 ? Math.min(limit, externalDeadline) : limit;
+    if (deadline <= Date.now()) {
+        announce("The shared work deadline has expired.");
+        return;
+    }
     let ownedTask: Task["nextCompletion"] | null = null;
+    let idleWaitReported = false;
     let workGoal: string | null = null;
     let spent = 0;
     let purchases = 0;
@@ -69,6 +77,12 @@ export async function main(ns: NS): Promise<void> {
                 }
                 const currentToken = current?.nextCompletion ?? null;
                 if (currentToken !== ownedTask || (current !== null && currentToken === null)) {
+                    if (flags["wait-idle"] === true && ownedTask === null && current !== null) {
+                        if (!idleWaitReported) announce("Player already working. Waiting for idle within this session.");
+                        idleWaitReported = true;
+                        await ns.sleep(Math.min(CHECK_INTERVAL_MS, Math.max(0, deadline - Date.now())));
+                        continue;
+                    }
                     announce("Stopped because player work is externally owned or was cancelled.");
                     return;
                 }
