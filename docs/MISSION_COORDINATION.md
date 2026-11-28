@@ -44,6 +44,18 @@ cash above reserve, and the top purchase quotes and reputation gaps in short
 lines. The terminal command `run bt4-plan.ts --reserve 0` returns the JSON
 observation. Add `--summary` for the AP format.
 
+Use **JIT6 dashboard → BitNode goal** to check the live gates for the current
+node's completion route. On the standard route, track Daedalus cash, installed
+augmentations, skills and the Red Pill separately. Use **Progression tools →
+Rank faction invitations** to compare open invitations that would add
+progression offers within the chosen cash reserve. This refreshes the game's
+invitations and highlights incompatible city factions before joining.
+
+In a budgeted session, JIT6 can move a pricier ready augmentation ahead of a
+cheaper preferred upgrade when the budget, cash floor and remaining purchase
+slots still cover both after repricing. The Red Pill retains priority. JIT6
+reads fresh quotes after each purchase.
+
 Share starts as soon as the controls and at least one worker thread fit. When
 home RAM demand rises, managed Share releases threads to restore headroom.
 A combined session also accounts for a pending Trader launch. Trader runs in
@@ -79,6 +91,7 @@ measure script RAM or timing in a live game save.
 - [Official Netscript declarations for v3.0.1](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/ScriptEditor/NetscriptDefinitions.d.ts)
 - [Official faction eligibility and work](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Faction/FactionInfo.tsx)
 - [Official player activity replacement](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/PersonObjects/Player/PlayerObjectWorkMethods.ts#L5-L10)
+- [Official generic augmentation repricing](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Augmentation/AugmentationHelpers.ts#L25-L33)
 - [Official augmentation and reset mechanics](https://github.com/bitburner-official/bitburner-src/blob/3162fd2590e221eadd0c0fbd46151913f7c4c41c/src/Documentation/doc/en/basic/augmentations.md)
 - [Community faction work selection](../sources/alainbryden/work-for-factions.js) and [stock reservation/commission handling](../sources/alainbryden/stockmaster.js)
 - [Earlier mission coordinator documentation](https://github.com/0x7n6/bitburner/blob/7190bfcb52fac12c16e598dddf2f8bef66c7202f/docs/MISSION_COORDINATION.md)

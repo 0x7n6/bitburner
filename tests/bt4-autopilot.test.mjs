@@ -227,6 +227,29 @@ test("successive rounds reprice and respect cumulative session budget", async ()
     assert.equal(state.cash, 800);
 });
 
+test("purchase order saves cash while preserving the preferred augmentation and reserve", async () => {
+    for (const [budget, reserve, expected, remaining] of [
+        [500, 500, ["Beta", "Alpha"], 510],
+        [450, 500, ["Alpha"], 900],
+        [500, 550, ["Alpha"], 900],
+    ]) {
+        const { ns, state } = fixture({ budget, reserve });
+        const prices = { Alpha: 100, Beta: 300 };
+        state.rep = 100;
+        ns.singularity.getAugmentationStats = name => ({ hacking_exp: name === "Alpha" ? 1.8 : 1.2 });
+        const quote = name => prices[name] * 1.9 ** state.purchases.length;
+        ns.singularity.getAugmentationPrice = quote;
+        ns.singularity.purchaseAugmentation = (_faction, name) => {
+            state.cash -= quote(name);
+            state.purchases.push(name);
+            return true;
+        };
+        await main(ns);
+        assert.deepEqual(state.purchases, expected);
+        assert.equal(state.cash, remaining);
+    }
+});
+
 test("cash floor and competing spender constrain automatic purchases", async () => {
     const { ns, state } = fixture({ budget: 1_000, reserve: 750 });
     state.rep = 100;

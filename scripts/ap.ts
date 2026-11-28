@@ -251,11 +251,15 @@ async function lifecycle(ns: NS): Promise<void> {
 
 async function jit6Dashboard(ns: NS): Promise<void> {
     const choice = await choose(ns, "JIT6 dashboard", [
-        "Current BitNode and readiness", "Augmentation reset readiness", "BitNode catalog", "BitNode multipliers", "Faction catalog", "Faction details",
+        "Current BitNode and readiness", "BitNode goal", "Augmentation reset readiness",
+        "BitNode catalog", "BitNode multipliers", "Faction catalog", "Faction details",
     ]);
     switch (choice) {
         case "Current BitNode and readiness":
             await launchAndWait(ns, JIT6_DASHBOARD, []);
+            return;
+        case "BitNode goal":
+            await launchAndWait(ns, "jit6-goal.ts", []);
             return;
         case "Augmentation reset readiness": {
             if (!await launchAndWait(ns, "bt4-detail.ts", ["--reset-summary"])) {
@@ -448,6 +452,7 @@ async function mission(ns: NS): Promise<void> {
     const choice = await choose(ns, "Progression tools", [
         "Basic snapshot",
         "Plan progression",
+        "Rank faction invitations",
         "Start faction work",
         "Buy one augmentation",
         "Upgrade home RAM",
@@ -460,6 +465,11 @@ async function mission(ns: NS): Promise<void> {
         case "Plan progression": {
             const floor = await askNonnegative(ns, "Cash reserve for planning (game dollars)");
             if (floor !== null) await launchAndWait(ns, "bt4-plan.ts", ["--reserve", floor, "--summary"]);
+            return;
+        }
+        case "Rank faction invitations": {
+            const floor = await askNonnegative(ns, "Cash reserve for ranking (game dollars)");
+            if (floor !== null) await launchAndWait(ns, "jit6-invitations.ts", ["--reserve", floor]);
             return;
         }
         case "Start faction work": {

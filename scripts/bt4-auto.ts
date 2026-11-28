@@ -3,11 +3,31 @@ import { observeProgression } from "./bt4-plan.ts";
 import { isUniversityStudy, LOCAL_UNIVERSITIES } from "./jit6-study-policy.ts";
 
 const MAX_PURCHASES = 8;
+// v3.0.1 raises generic prices by at most 1.9× per purchase. SF11 can lower the multiplier.
+const MAX_GENERIC_REPRICE = 1.9;
 const CHECK_INTERVAL_MS = 5_000;
 const WORK_CONFLICTS = new Set(["bt4-action.ts", "progression.ts", "findV2.ts", "mission-study.ts"]);
 const SPENDING_CONFLICTS = new Set(["trader.ts", "traderctl.ts", "fleet.ts"]);
 type ReputationTarget = ReturnType<typeof observeProgression>["repTargets"][number];
+type ReadyAugmentation = ReturnType<typeof observeProgression>["ready"][number];
 type FactionWorkType = ReputationTarget["seller"]["work"][number];
+
+function choosePurchase(ready: ReadyAugmentation[], funds: number, slots: number): ReadyAugmentation | undefined {
+    if (funds < 0 || slots < 1) return undefined;
+    const eligible = ready.filter(candidate => candidate.useful && Number.isFinite(candidate.price) &&
+        candidate.price >= 0 && candidate.price <= funds);
+    const preferred = eligible[0];
+    if (!preferred || preferred.mission || slots < 2 ||
+        preferred.sellers.some(seller => seller.faction === "Shadows of Anarchy")) return preferred;
+
+    // Advance a pricier generic purchase only while the preferred choice still fits after repricing.
+    const fundsBeforePreferred = funds - MAX_GENERIC_REPRICE * preferred.price;
+    return eligible.reduce((best, candidate) => {
+        if (candidate.price > best.price && candidate.price <= fundsBeforePreferred &&
+            candidate.sellers.every(seller => seller.faction !== "Shadows of Anarchy")) return candidate;
+        return best;
+    }, preferred);
+}
 
 function chooseWork(ns: NS, targets: ReputationTarget[], unfocusedWorkRate: number) {
     const target = targets[0];
@@ -140,9 +160,8 @@ export async function main(ns: NS): Promise<void> {
             }
 
             const plan = observeProgression(ns, live.currentNode, reserve);
-            const nextPurchase = budget > 0 && purchases < MAX_PURCHASES
-                ? plan.ready.find(candidate => candidate.useful && Number.isFinite(candidate.price) &&
-                    candidate.price >= 0 && candidate.price <= budget - spent)
+            const nextPurchase = budget > 0
+                ? choosePurchase(plan.ready, Math.min(plan.available, budget - spent), MAX_PURCHASES - purchases)
                 : undefined;
             const seller = nextPurchase?.sellers.find(offer => offer.repMissing === 0);
 

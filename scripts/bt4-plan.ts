@@ -14,6 +14,16 @@ const NEURORECEPTOR_IMPLANT = "Neuroreceptor Management Implant";
 // Bitburner v3.0.1 applies BaseFocusBonus to unfocused faction work.
 const UNFOCUSED_WORK_RATE = 0.8;
 
+export function augmentationBenefit(name: string, stats: ReturnType<NS["singularity"]["getAugmentationStats"]>) {
+    const improvesUnfocusedWork = name === NEURORECEPTOR_IMPLANT;
+    let score = Object.entries(SCORE_WEIGHTS).reduce((sum, [key, weight]) => {
+        const multiplier = stats[key as keyof typeof SCORE_WEIGHTS] ?? 1;
+        return sum + weight * Math.log(multiplier > 0 ? multiplier : 1);
+    }, 0);
+    if (improvesUnfocusedWork) score += SCORE_WEIGHTS.faction_rep * Math.log(1 / UNFOCUSED_WORK_RATE);
+    return { score, improvesUnfocusedWork };
+}
+
 export function observeProgression(ns: NS, node: number, reserve: number) {
     const player = ns.getPlayer();
     const installed = ns.singularity.getOwnedAugmentations(false);
@@ -31,13 +41,7 @@ export function observeProgression(ns: NS, node: number, reserve: number) {
 
     const candidates = [...names].filter(name => !owned.has(name)).map(name => {
         const repRequired = ns.singularity.getAugmentationRepReq(name);
-        const stats = ns.singularity.getAugmentationStats(name);
-        const numericScore = Object.entries(SCORE_WEIGHTS).reduce((sum, [key, weight]) => {
-            const multiplier = stats[key as keyof typeof SCORE_WEIGHTS] ?? 1;
-            return sum + weight * Math.log(multiplier > 0 ? multiplier : 1);
-        }, 0);
-        const improvesUnfocusedWork = name === NEURORECEPTOR_IMPLANT;
-        const score = numericScore + (improvesUnfocusedWork ? SCORE_WEIGHTS.faction_rep * Math.log(1 / UNFOCUSED_WORK_RATE) : 0);
+        const { score, improvesUnfocusedWork } = augmentationBenefit(name, ns.singularity.getAugmentationStats(name));
         const sellers = factions.filter(faction => faction.offers.includes(name)).map(faction => ({
             faction: faction.name,
             repMissing: Math.max(0, repRequired - faction.rep),
@@ -154,7 +158,7 @@ export async function main(ns: NS): Promise<void> {
         for (const { augmentation, seller } of targets.slice(0, 6)) {
             show(`Reputation target: ${augmentation} | ${seller.faction} | ${Math.ceil(seller.repMissing).toLocaleString()} rep remaining`);
         }
-        if (!ranked.length && !targets.length) show("Check additional sellers under JIT6 dashboard → Faction details.");
+        if (!ranked.length && !targets.length) show("Check Rank faction invitations for new offers and BitNode goal for remaining gates.");
         return;
     }
     ns.tprint(JSON.stringify({
