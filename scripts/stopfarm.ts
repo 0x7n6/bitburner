@@ -3,6 +3,8 @@ import type { NS } from "@ns";
 const PAUSE_FILE =
     ".7n8-pause.txt";
 
+const WORK_POLICY = ".7n8-mission-work.txt";
+
 const DAEMON =
     "daemon.ts";
 
@@ -39,8 +41,12 @@ export async function main(
         "w"
     );
 
+    if (flags.os && ns.fileExists(WORK_POLICY, "home")) ns.rm(WORK_POLICY, "home");
+
     const victims =
         new Set([
+            "mission.ts",
+            "mission-study.ts",
             "bt4-auto.ts",
             "early.ts",
             "jit5.ts",
@@ -141,11 +147,8 @@ export async function main(
             const proc
             of ns.ps(host)
         ) {
-            if (
-                !victims.has(
-                    proc.filename
-                )
-            ) {
+            const missionTrader = proc.filename === "trader.ts" && proc.args.includes("--mission-owned");
+            if (!missionTrader && !victims.has(proc.filename)) {
                 continue;
             }
 
@@ -179,6 +182,9 @@ export async function main(
             : `7n8 OS PAUSED | farm processes killed=${killed}`
     );
 
+    ns.tprint("Player activity continues. Mission Trader positions are held.");
+    ns.tprint("Only an unexpired player-work policy can be resumed.");
+
     ns.tprint(
         "Resume with: run stopfarm.ts --resume"
     );
@@ -188,17 +194,8 @@ export async function main(
 async function resumeOS(
     ns: NS
 ): Promise<void> {
-    if (
-        ns.fileExists(
-            PAUSE_FILE,
-            "home"
-        )
-    ) {
-        ns.rm(
-            PAUSE_FILE,
-            "home"
-        );
-    }
+    const wasPaused = ns.fileExists(PAUSE_FILE, "home");
+    if (wasPaused) ns.rm(PAUSE_FILE, "home");
 
     const daemonRunning =
         ns.ps("home")
@@ -212,7 +209,7 @@ async function resumeOS(
         ns.tprint(
             "7n8 OS RESUMED | daemon already online"
         );
-
+        if (wasPaused) resumeMission(ns);
         return;
     }
 
@@ -248,9 +245,22 @@ async function resumeOS(
         `7n8 OS RESUMING | bootstrap PID ${pid}`
     );
 
-    await ns.sleep(
-        100
-    );
+    await ns.sleep(100);
+    if (wasPaused) resumeMission(ns);
+}
+
+function resumeMission(ns: NS): void {
+    if (!ns.fileExists(WORK_POLICY, "home")) return;
+    const ram = ns.getScriptRam("mission.ts", "home");
+    const emergency = ns.getScriptRam("stopfarm.ts", "home");
+    const free = ns.getServerMaxRam("home") - ns.getServerUsedRam("home");
+    if (!(ram > 0) || !(emergency > 0) || free - ram < emergency) {
+        ns.tprint("[MISSION] Resume deferred. Try Mission coordination once RAM is available.");
+        return;
+    }
+    if (!ns.exec("mission.ts", "home", 1, "--resume")) {
+        ns.tprint("[MISSION] Resume launch rejected.");
+    }
 }
 
 

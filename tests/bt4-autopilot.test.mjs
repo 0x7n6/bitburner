@@ -138,7 +138,7 @@ test("emergency RAM, reset generation, and incompatible version stop the loop", 
     const { ns, state } = fixture();
     state.version = "3.0.2";
     await main(ns);
-    assert.match(state.logs[0], /requires home, BN4/);
+    assert.match(state.logs[0], /requires home and Singularity/);
     assert.deepEqual(state.events, []);
 });
 

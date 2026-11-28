@@ -8,7 +8,7 @@ const PAUSE_FILE = ".7n8-pause.txt";
 const BT4_AUTO = "bt4-auto.ts";
 
 const MISSION_TOOLS = new Set([
-    "bt4.ts", "bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts", BT4_AUTO,
+    "bt4.ts", "bt4-detail.ts", "bt4-plan.ts", "bt4-action.ts", "mission.ts", "mission-study.ts", BT4_AUTO,
 ]);
 
 const ENGINES = [
@@ -48,6 +48,7 @@ export async function main(ns: NS): Promise<void> {
                     "Economic engines",
                     "Network intelligence",
                     "BN4 mission",
+                    "Mission coordination",
                     "Capital management",
                     "System services",
                     "Universal script launcher",
@@ -70,6 +71,10 @@ export async function main(ns: NS): Promise<void> {
 
             case "Network intelligence":
                 await network(ns);
+                break;
+
+            case "Mission coordination":
+                await missionCoordination(ns);
                 break;
 
             case "BN4 mission":
@@ -117,7 +122,7 @@ function showStatus(ns: NS): void {
         reset.currentNode === 4 || sf4 > 0;
 
     const engine = running
-        .filter(p => ENGINES.includes(p.filename))
+        .filter(p => ENGINES.includes(p.filename) || p.filename === "jit6.ts")
         .map(p => p.filename)
         .join(", ");
 
@@ -411,6 +416,35 @@ async function network(ns: NS): Promise<void> {
     if (choice === "Neofetch") {
         await launchAndWait(ns, "neofetch.ts", []);
     }
+}
+
+async function missionCoordination(ns: NS): Promise<void> {
+    const choice = await choose(ns, "Mission coordination", [
+        "Show capability and RAM status", "Start work-only mission", "Start work and Share", "Start work and Trader",
+    ]);
+    if (choice === "Back") return;
+    if (choice === "Show capability and RAM status") {
+        await launchAndWait(ns, "mission.ts", []);
+        return;
+    }
+    const args: ScriptArg[] = ["--start", "--remember-work"];
+    let summary = "Start 15 minutes of player-work policy? stp-rs can resume work until this session expires.";
+    if (choice === "Start work and Share") {
+        args.push("--share");
+        summary = "Start 15 minutes of work and enable Share if RAM permits? Share runs until stopped.";
+    }
+    if (choice === "Start work and Trader") {
+        const reserve = await askNonnegative(ns, "Trader cash floor (game dollars)");
+        if (reserve === null) return;
+        if (reserve === 0) {
+            ns.tprint("[MISSION] A positive cash floor is required to start Trader.");
+            return;
+        }
+        args.push("--trader", "--reserve", reserve);
+        summary = `Start work and long-only Trader with a $${reserve.toLocaleString()} cash floor? stp halts trading and holds positions.`;
+    }
+    if (await ns.prompt(summary, { type: "boolean" }) !== true) return;
+    await launchAndWait(ns, "mission.ts", args);
 }
 
 async function mission(ns: NS): Promise<void> {
@@ -865,7 +899,7 @@ function launch(
     }
 
     if (MISSION_TOOLS.has(script)) {
-        if (script !== "bt4.ts") {
+        if (script !== "bt4.ts" && script !== "mission.ts") {
             const reset = ns.getResetInfo();
             if (reset.currentNode !== 4 && (reset.ownedSF.get(4) ?? 0) === 0) {
                 ns.tprint("[BT4] Singularity unavailable; select Basic snapshot.");
@@ -876,9 +910,8 @@ function launch(
                 return 0;
             }
         }
-        if (script === BT4_AUTO && (!ns.fileExists("bt4-plan.ts", "home") ||
-            ns.getResetInfo().currentNode !== 4)) {
-            ns.tprint("[BT4] Autopilot needs BN4 and bt4-plan.ts.");
+        if (script === BT4_AUTO && !ns.fileExists("bt4-plan.ts", "home")) {
+            ns.tprint("[BT4] Autopilot needs bt4-plan.ts.");
             return 0;
         }
         const reserve = ns.getScriptRam("stopfarm.ts", "home");

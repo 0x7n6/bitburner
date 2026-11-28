@@ -300,6 +300,9 @@ function superviseTrader(
      * .7n8-pause.txt controls JIT5/farming only.
      * Trader has its own lifecycle through traderctl.ts.
      */
+    // A mission-managed trader requires its explicit cash floor on each launch.
+    if (ns.fileExists(".7n8-mission-trader-hold.txt", "home")) return;
+
     if (
         ns.fileExists(
             TRADER_DISABLED_FILE,

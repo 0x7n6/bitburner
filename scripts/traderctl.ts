@@ -182,6 +182,10 @@ async function startTrader(
         return;
     }
 
+    if (ns.fileExists(".7n8-mission-trader-hold.txt", "home")) {
+        ns.rm(".7n8-mission-trader-hold.txt", "home");
+    }
+
     ns.tprint(
         `[TRADER] STARTED | PID ${pid}`
     );

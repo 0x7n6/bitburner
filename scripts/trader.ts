@@ -87,6 +87,7 @@ export async function main(
             ["min-trade", 50e6],
 
             ["disable-shorts", false],
+            ["mission-owned", false],
 
             ["status-every", 5],
 

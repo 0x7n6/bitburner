@@ -3,7 +3,7 @@ import { observeProgression } from "./bt4-plan.ts";
 
 const MAX_PURCHASES = 8;
 const CHECK_INTERVAL_MS = 5_000;
-const WORK_CONFLICTS = new Set(["bt4-action.ts", "progression.ts", "findV2.ts"]);
+const WORK_CONFLICTS = new Set(["bt4-action.ts", "progression.ts", "findV2.ts", "mission-study.ts"]);
 const SPENDING_CONFLICTS = new Set(["trader.ts", "traderctl.ts", "fleet.ts"]);
 const LOCAL_UNIVERSITIES = {
     "Aevum": "Summit University",
@@ -27,9 +27,9 @@ export async function main(ns: NS): Promise<void> {
 
     const reset = ns.getResetInfo();
     const game = ns.ui.getGameInfo();
-    if (ns.getHostname() !== "home" || reset.currentNode !== 4 ||
+    if (ns.getHostname() !== "home" || (reset.currentNode !== 4 && !(reset.ownedSF.get(4) ?? 0)) ||
         game.version !== "3.0.1" || !game.commit.startsWith("3162fd2")) {
-        announce("This pilot requires home, BN4, and Bitburner v3.0.1 (3162fd2).");
+        announce("This pilot requires home and Singularity on Bitburner v3.0.1 (3162fd2).");
         return;
     }
 
